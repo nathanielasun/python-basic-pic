@@ -1,0 +1,14 @@
+# test_fixture=true
+# used_by=tests/test_electric_fields.py::TestElectricFieldsCsvIO
+# component=electric
+# time=0.0
+# description=uniform Ez on a 2x2x2 structured grid (kept for CSV field I/O tests)
+x,y,z,Ex,Ey,Ez
+0,0,0,0,0,1
+1,0,0,0,0,1
+0,1,0,0,0,1
+1,1,0,0,0,1
+0,0,1,0,0,1
+1,0,1,0,0,1
+0,1,1,0,0,1
+1,1,1,0,0,1
