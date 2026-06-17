@@ -16,6 +16,54 @@ if _SRC.is_dir() and str(_SRC) not in sys.path:
 from ElectricFields import ElectricFields
 from field_frame import WaveFrame
 
+# CSV fixtures under data/ — version-controlled test inputs; do not remove.
+_DATA_DIR = Path(__file__).resolve().parents[1] / "data"
+ELECTRIC_UNIFORM_Z_CSV = _DATA_DIR / "electric_uniform_z.csv"
+
+
+class TestElectricFieldsCsvIO(unittest.TestCase):
+    """Field I/O tests using ``data/electric_uniform_z.csv`` (test fixture; keep file)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.csv_path = ELECTRIC_UNIFORM_Z_CSV
+        if not cls.csv_path.is_file():
+            raise unittest.SkipTest(f"test fixture missing: {cls.csv_path}")
+
+    def test_from_csv_loads_structured_uniform_ez(self) -> None:
+        efield = ElectricFields.from_csv(self.csv_path)
+        self.assertTrue(efield.dataset.is_structured)
+        self.assertFalse(efield.dataset.is_time_dependent)
+        self.assertEqual(efield.dataset.metadata.get("test_fixture"), "true")
+        self.assertEqual(efield.dataset.metadata.get("component"), "electric")
+
+        field = efield.at(np.array([0.0, 0.0, 0.0]), t=0.0)
+        self.assertAlmostEqual(float(field[0]), 0.0)
+        self.assertAlmostEqual(float(field[1]), 0.0)
+        self.assertAlmostEqual(float(field[2]), 1.0)
+
+        corner = efield.at(np.array([1.0, 1.0, 1.0]), t=0.0)
+        self.assertTrue(np.allclose(corner, [0.0, 0.0, 1.0], rtol=1e-12))
+
+    def test_csv_uniform_field_at_interior_point(self) -> None:
+        efield = ElectricFields.from_csv(self.csv_path)
+        field = efield.at(np.array([0.5, 0.5, 0.5]), t=0.0)
+        self.assertTrue(np.allclose(field, [0.0, 0.0, 1.0], rtol=1e-10))
+
+    def test_csv_on_grid_matches_samples(self) -> None:
+        efield = ElectricFields.from_csv(self.csv_path)
+        coords = np.array([0.0, 1.0])
+        ex, ey, ez = efield.on_grid(coords, coords, coords, t=0.0)
+        self.assertTrue(np.allclose(ex, 0.0))
+        self.assertTrue(np.allclose(ey, 0.0))
+        self.assertTrue(np.allclose(ez, 1.0))
+
+    def test_load_from_file_replaces_field(self) -> None:
+        efield = ElectricFields.zero()
+        efield.load_from_file(self.csv_path)
+        field = efield.at(np.array([1.0, 0.0, 1.0]), t=0.0)
+        self.assertTrue(np.allclose(field, [0.0, 0.0, 1.0], rtol=1e-12))
+
 
 class TestElectricFieldsWaveFrame(unittest.TestCase):
     def test_linear_sinusoid_along_local_z(self) -> None:

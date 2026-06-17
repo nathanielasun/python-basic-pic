@@ -16,6 +16,54 @@ if _SRC.is_dir() and str(_SRC) not in sys.path:
 from MagneticFields import MagneticFields
 from field_frame import WaveFrame
 
+# CSV fixtures under data/ — version-controlled test inputs; do not remove.
+_DATA_DIR = Path(__file__).resolve().parents[1] / "data"
+MAGNETIC_UNIFORM_Z_CSV = _DATA_DIR / "magnetic_uniform_z.csv"
+
+
+class TestMagneticFieldsCsvIO(unittest.TestCase):
+    """Field I/O tests using ``data/magnetic_uniform_z.csv`` (test fixture; keep file)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.csv_path = MAGNETIC_UNIFORM_Z_CSV
+        if not cls.csv_path.is_file():
+            raise unittest.SkipTest(f"test fixture missing: {cls.csv_path}")
+
+    def test_from_csv_loads_structured_uniform_bz(self) -> None:
+        bfield = MagneticFields.from_csv(self.csv_path)
+        self.assertTrue(bfield.dataset.is_structured)
+        self.assertFalse(bfield.dataset.is_time_dependent)
+        self.assertEqual(bfield.dataset.metadata.get("test_fixture"), "true")
+        self.assertEqual(bfield.dataset.metadata.get("component"), "magnetic")
+
+        field = bfield.at(np.array([0.0, 0.0, 0.0]), t=0.0)
+        self.assertAlmostEqual(float(field[0]), 0.0)
+        self.assertAlmostEqual(float(field[1]), 0.0)
+        self.assertAlmostEqual(float(field[2]), 0.5)
+
+        corner = bfield.at(np.array([1.0, 1.0, 1.0]), t=0.0)
+        self.assertTrue(np.allclose(corner, [0.0, 0.0, 0.5], rtol=1e-12))
+
+    def test_csv_uniform_field_at_interior_point(self) -> None:
+        bfield = MagneticFields.from_csv(self.csv_path)
+        field = bfield.at(np.array([0.5, 0.5, 0.5]), t=0.0)
+        self.assertTrue(np.allclose(field, [0.0, 0.0, 0.5], rtol=1e-10))
+
+    def test_csv_on_grid_matches_samples(self) -> None:
+        bfield = MagneticFields.from_csv(self.csv_path)
+        coords = np.array([0.0, 1.0])
+        bx, by, bz = bfield.on_grid(coords, coords, coords, t=0.0)
+        self.assertTrue(np.allclose(bx, 0.0))
+        self.assertTrue(np.allclose(by, 0.0))
+        self.assertTrue(np.allclose(bz, 0.5))
+
+    def test_read_from_csv_replaces_field(self) -> None:
+        bfield = MagneticFields.zero()
+        bfield.read_from_csv(self.csv_path)
+        field = bfield.at(np.array([1.0, 0.0, 1.0]), t=0.0)
+        self.assertTrue(np.allclose(field, [0.0, 0.0, 0.5], rtol=1e-12))
+
 
 class TestMagneticFieldsWaveFrame(unittest.TestCase):
     def test_linear_sinusoid_along_local_z(self) -> None:
