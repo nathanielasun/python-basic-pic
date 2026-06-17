@@ -6,6 +6,7 @@ __pycache__/
 # OpenBLAS Numpy build directories
 builddir/
 numpy/
+.build/
 
 # C extensions
 *.so
