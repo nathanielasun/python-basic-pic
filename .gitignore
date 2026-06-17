@@ -3,6 +3,10 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# OpenBLAS Numpy build directories
+builddir/
+numpy/
+
 # C extensions
 *.so
 
