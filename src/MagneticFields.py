@@ -2,7 +2,7 @@
 Author: Nathaniel Sun
 Date: 2026-06-17
 Description:
-    Prescribed spacetime-dependent electric field sources for PIC drivers.
+    Prescribed spacetime-dependent magnetic field sources for PIC drivers.
 
     Wave sources are authored in a fixed local Cartesian frame (propagation
     along local +z'). Spatial rotation into the PIC grid is applied only
@@ -41,10 +41,10 @@ from field_io import (
     phase,
 )
 
-E_COMPONENTS = ("Ex", "Ey", "Ez")
+B_COMPONENTS = ("Bx", "By", "Bz")
 
 
-class ElectricFieldMode(StrEnum):
+class MagneticFieldMode(StrEnum):
     ZERO = "zero"
     UNIFORM = "uniform"
     SINUSOIDAL = "sinusoidal"
@@ -53,12 +53,13 @@ class ElectricFieldMode(StrEnum):
     PLANE_WAVE = "plane_wave"
     GAUSSIAN_PULSE = "gaussian_pulse"
     LINEAR_RAMP = "linear_ramp"
+    MIRROR = "mirror"
     FILE = "file"
 
 
 @dataclass
-class ElectricFieldSpec:
-    """Parameters for analytical electric field generators."""
+class MagneticFieldSpec:
+    """Parameters for analytical magnetic field generators."""
 
     amplitude: NDArray[np.float64] = field(default_factory=lambda: np.zeros(3))
     offset: NDArray[np.float64] = field(default_factory=lambda: np.zeros(3))
@@ -69,44 +70,45 @@ class ElectricFieldSpec:
     envelope_width: NDArray[np.float64] = field(default_factory=lambda: np.ones(3))
     ramp_axis: int = 2
     ramp_rate: float = 0.0
-    E0: float = 0.0
+    B0: float = 0.0
     polarization_kind: PolarizationKind = PolarizationKind.LINEAR
     polarization_psi: float = 0.0
     polarization_delta: float = 0.0
+    mirror_scale: float = 1.0
 
 
-class ElectricFields:
+class MagneticFields:
     """
-    Spacetime-dependent prescribed electric field E(r, t).
+    Spacetime-dependent prescribed magnetic field B(r, t).
 
     Wave factories build sources in a fixed local frame. Rotate into the PIC
-    grid with ``ElectricFields.transform`` and a static ``WaveFrame``::
+    grid with ``MagneticFields.transform`` and a static ``WaveFrame``::
 
-        local = ElectricFields.sinusoidal_linear(E0=1e8, omega=2e15, k_magnitude=k0)
+        local = MagneticFields.sinusoidal_linear(B0=0.5, omega=1e6, k_magnitude=k0)
         frame = WaveFrame.from_spherical(theta=np.deg2rad(30), phi=np.deg2rad(45))
-        efield = ElectricFields.transform(local, frame)
-        E_p = efield.at(particle.get_position(), t=step * dt)
+        bfield = MagneticFields.transform(local, frame)
+        B_p = bfield.at(particle.get_position(), t=step * dt)
     """
 
     def __init__(
         self,
-        mode: ElectricFieldMode | str = ElectricFieldMode.ZERO,
-        spec: ElectricFieldSpec | None = None,
+        mode: MagneticFieldMode | str = MagneticFieldMode.ZERO,
+        spec: MagneticFieldSpec | None = None,
         dataset: FieldDataset | None = None,
     ) -> None:
-        self.mode = ElectricFieldMode(mode)
-        self.spec = spec if spec is not None else ElectricFieldSpec()
+        self.mode = MagneticFieldMode(mode)
+        self.spec = spec if spec is not None else MagneticFieldSpec()
         self.dataset = dataset
         self._interpolator = FieldInterpolator(dataset) if dataset is not None else None
 
     @classmethod
-    def zero(cls) -> ElectricFields:
-        return cls(ElectricFieldMode.ZERO)
+    def zero(cls) -> MagneticFields:
+        return cls(MagneticFieldMode.ZERO)
 
     @classmethod
-    def uniform(cls, amplitude: Sequence[float] | NDArray[np.floating]) -> ElectricFields:
-        spec = ElectricFieldSpec(amplitude=np.asarray(amplitude, dtype=np.float64))
-        return cls(ElectricFieldMode.UNIFORM, spec)
+    def uniform(cls, amplitude: Sequence[float] | NDArray[np.floating]) -> MagneticFields:
+        spec = MagneticFieldSpec(amplitude=np.asarray(amplitude, dtype=np.float64))
+        return cls(MagneticFieldMode.UNIFORM, spec)
 
     @classmethod
     def sinusoidal(
@@ -115,20 +117,20 @@ class ElectricFields:
         omega: float,
         wavevector: Sequence[float] | NDArray[np.floating] | None = None,
         phase0: float = 0.0,
-    ) -> ElectricFields:
+    ) -> MagneticFields:
         """Legacy lab-frame sinusoidal plane wave with a fixed amplitude vector."""
-        spec = ElectricFieldSpec(
+        spec = MagneticFieldSpec(
             amplitude=np.asarray(amplitude, dtype=np.float64),
             omega=omega,
             wavevector=np.asarray(wavevector if wavevector is not None else [0.0, 0.0, 0.0]),
             phase0=phase0,
         )
-        return cls(ElectricFieldMode.SINUSOIDAL, spec)
+        return cls(MagneticFieldMode.SINUSOIDAL, spec)
 
     @classmethod
     def sinusoidal_linear(
         cls,
-        E0: float,
+        B0: float,
         omega: float,
         *,
         k_magnitude: float | None = None,
@@ -136,12 +138,12 @@ class ElectricFields:
         wavevector: Sequence[float] | NDArray[np.floating] | None = None,
         phase0: float = 0.0,
         psi: float = 0.0,
-    ) -> ElectricFields:
+    ) -> MagneticFields:
         """
         Linearly polarized sinusoidal plane wave in the local source frame.
 
         Propagation is along local +z; polarization lies in the local xy-plane
-        at angle ``psi``. Rotate into the PIC grid with ``ElectricFields.transform``.
+        at angle ``psi``. Rotate into the PIC grid with ``MagneticFields.transform``.
         """
         if wavevector is not None:
             k_mag = resolve_k_magnitude(
@@ -151,20 +153,20 @@ class ElectricFields:
             )
         else:
             k_mag = resolve_k_magnitude(wavevector=None, k_magnitude=k_magnitude, wavelength=wavelength)
-        spec = ElectricFieldSpec(
-            E0=E0,
+        spec = MagneticFieldSpec(
+            B0=B0,
             omega=omega,
             wavevector=local_wavevector(k_mag),
             phase0=phase0,
             polarization_kind=PolarizationKind.LINEAR,
             polarization_psi=psi,
         )
-        return cls(ElectricFieldMode.SINUSOIDAL_LINEAR, spec)
+        return cls(MagneticFieldMode.SINUSOIDAL_LINEAR, spec)
 
     @classmethod
     def sinusoidal_elliptical(
         cls,
-        E0: float,
+        B0: float,
         omega: float,
         *,
         psi: float = 0.0,
@@ -173,7 +175,7 @@ class ElectricFields:
         wavelength: float | None = None,
         wavevector: Sequence[float] | NDArray[np.floating] | None = None,
         phase0: float = 0.0,
-    ) -> ElectricFields:
+    ) -> MagneticFields:
         """
         Elliptically polarized sinusoidal plane wave in the local source frame.
 
@@ -188,8 +190,8 @@ class ElectricFields:
             )
         else:
             k_mag = resolve_k_magnitude(wavevector=None, k_magnitude=k_magnitude, wavelength=wavelength)
-        spec = ElectricFieldSpec(
-            E0=E0,
+        spec = MagneticFieldSpec(
+            B0=B0,
             omega=omega,
             wavevector=local_wavevector(k_mag),
             phase0=phase0,
@@ -197,7 +199,7 @@ class ElectricFields:
             polarization_psi=psi,
             polarization_delta=delta,
         )
-        return cls(ElectricFieldMode.SINUSOIDAL_ELLIPTICAL, spec)
+        return cls(MagneticFieldMode.SINUSOIDAL_ELLIPTICAL, spec)
 
     @classmethod
     def plane_wave(
@@ -206,43 +208,43 @@ class ElectricFields:
         omega: float,
         wavevector: Sequence[float] | NDArray[np.floating],
         phase0: float = 0.0,
-    ) -> ElectricFields:
+    ) -> MagneticFields:
         """Legacy lab-frame cosine plane wave with a fixed amplitude vector."""
-        spec = ElectricFieldSpec(
+        spec = MagneticFieldSpec(
             amplitude=np.asarray(amplitude, dtype=np.float64),
             omega=omega,
             wavevector=np.asarray(wavevector, dtype=np.float64),
             phase0=phase0,
         )
-        return cls(ElectricFieldMode.PLANE_WAVE, spec)
+        return cls(MagneticFieldMode.PLANE_WAVE, spec)
 
     @classmethod
     def plane_wave_local(
         cls,
-        E0: float,
+        B0: float,
         omega: float,
         *,
         k_magnitude: float | None = None,
         wavelength: float | None = None,
         phase0: float = 0.0,
         psi: float = 0.0,
-    ) -> ElectricFields:
+    ) -> MagneticFields:
         """Cosine plane wave in the local source frame (local +z propagation)."""
         k_mag = resolve_k_magnitude(wavevector=None, k_magnitude=k_magnitude, wavelength=wavelength)
-        spec = ElectricFieldSpec(
-            E0=E0,
+        spec = MagneticFieldSpec(
+            B0=B0,
             omega=omega,
             wavevector=local_wavevector(k_mag),
             phase0=phase0,
             polarization_kind=PolarizationKind.LINEAR,
             polarization_psi=psi,
         )
-        return cls(ElectricFieldMode.PLANE_WAVE, spec)
+        return cls(MagneticFieldMode.PLANE_WAVE, spec)
 
     @classmethod
     def plane_wave_from_direction(
         cls,
-        E0: float,
+        B0: float,
         omega: float,
         k_direction: Sequence[float] | NDArray[np.floating],
         *,
@@ -254,7 +256,7 @@ class ElectricFields:
     ) -> PolarTransformedField:
         """Cosine plane wave rotated into the lab frame via a static ``WaveFrame``."""
         local = cls.plane_wave_local(
-            E0,
+            B0,
             omega,
             k_magnitude=k_magnitude,
             wavelength=wavelength,
@@ -266,7 +268,7 @@ class ElectricFields:
     @classmethod
     def plane_wave_incident(
         cls,
-        E0: float,
+        B0: float,
         omega: float,
         theta: float,
         phi: float,
@@ -279,7 +281,7 @@ class ElectricFields:
     ) -> PolarTransformedField:
         """Cosine plane wave incident at spherical angles ``(theta, phi)``."""
         local = cls.plane_wave_local(
-            E0,
+            B0,
             omega,
             k_magnitude=k_magnitude,
             wavelength=wavelength,
@@ -291,7 +293,7 @@ class ElectricFields:
     @classmethod
     def gaussian_pulse_local(
         cls,
-        E0: float,
+        B0: float,
         omega: float,
         *,
         k_magnitude: float | None = None,
@@ -301,12 +303,12 @@ class ElectricFields:
         phase0: float = 0.0,
         psi: float = 0.0,
         delta: float = 0.0,
-    ) -> ElectricFields:
+    ) -> MagneticFields:
         """
         Gaussian-enveloped cosine pulse in the local source frame.
 
         Propagation is along local +z; the envelope is axis-aligned in local
-        coordinates. Rotate into the PIC grid with ``ElectricFields.transform``.
+        coordinates. Rotate into the PIC grid with ``MagneticFields.transform``.
         """
         k_mag = resolve_k_magnitude(wavevector=None, k_magnitude=k_magnitude, wavelength=wavelength)
         center_arr = (
@@ -317,8 +319,8 @@ class ElectricFields:
         if center_arr.shape != (3,):
             raise ValueError("center must have shape (3,)")
         pol_kind = PolarizationKind.LINEAR if delta == 0.0 else PolarizationKind.ELLIPTICAL
-        spec = ElectricFieldSpec(
-            E0=E0,
+        spec = MagneticFieldSpec(
+            B0=B0,
             omega=omega,
             wavevector=local_wavevector(k_mag),
             envelope_center=center_arr,
@@ -328,12 +330,12 @@ class ElectricFields:
             polarization_psi=psi,
             polarization_delta=delta,
         )
-        return cls(ElectricFieldMode.GAUSSIAN_PULSE, spec)
+        return cls(MagneticFieldMode.GAUSSIAN_PULSE, spec)
 
     @classmethod
     def gaussian_pulse_from_direction(
         cls,
-        E0: float,
+        B0: float,
         omega: float,
         k_direction: Sequence[float] | NDArray[np.floating],
         *,
@@ -349,7 +351,7 @@ class ElectricFields:
     ) -> PolarTransformedField:
         """Gaussian pulse rotated into the lab frame via a static ``WaveFrame``."""
         local = cls.gaussian_pulse_local(
-            E0,
+            B0,
             omega,
             k_magnitude=k_magnitude,
             wavelength=wavelength,
@@ -365,7 +367,7 @@ class ElectricFields:
     @classmethod
     def gaussian_pulse_incident(
         cls,
-        E0: float,
+        B0: float,
         omega: float,
         theta: float,
         phi: float,
@@ -382,7 +384,7 @@ class ElectricFields:
     ) -> PolarTransformedField:
         """Gaussian pulse incident at spherical angles ``(theta, phi)``."""
         local = cls.gaussian_pulse_local(
-            E0,
+            B0,
             omega,
             k_magnitude=k_magnitude,
             wavelength=wavelength,
@@ -404,9 +406,9 @@ class ElectricFields:
         center: Sequence[float] | NDArray[np.floating],
         width: Sequence[float] | NDArray[np.floating],
         phase0: float = 0.0,
-    ) -> ElectricFields:
+    ) -> MagneticFields:
         """Legacy lab-frame Gaussian-enveloped cosine wave."""
-        spec = ElectricFieldSpec(
+        spec = MagneticFieldSpec(
             amplitude=np.asarray(amplitude, dtype=np.float64),
             omega=omega,
             wavevector=np.asarray(wavevector, dtype=np.float64),
@@ -414,7 +416,7 @@ class ElectricFields:
             envelope_width=np.asarray(width, dtype=np.float64),
             phase0=phase0,
         )
-        return cls(ElectricFieldMode.GAUSSIAN_PULSE, spec)
+        return cls(MagneticFieldMode.GAUSSIAN_PULSE, spec)
 
     @classmethod
     def linear_ramp(
@@ -422,19 +424,29 @@ class ElectricFields:
         ramp_rate: float,
         axis: Literal["x", "y", "z"] = "z",
         offset: Sequence[float] | NDArray[np.floating] | None = None,
-    ) -> ElectricFields:
+    ) -> MagneticFields:
         axis_index = {"x": 0, "y": 1, "z": 2}[axis]
-        spec = ElectricFieldSpec(
+        spec = MagneticFieldSpec(
             ramp_rate=ramp_rate,
             ramp_axis=axis_index,
             offset=np.asarray(offset if offset is not None else [0.0, 0.0, 0.0]),
         )
-        return cls(ElectricFieldMode.LINEAR_RAMP, spec)
+        return cls(MagneticFieldMode.LINEAR_RAMP, spec)
+
+    @classmethod
+    def mirror_local(cls, B0: float, scale_length: float = 1.0) -> MagneticFields:
+        """
+        Mirror-field profile along local +z: ``B_z = B0 * (1 + (z/scale)^2)``.
+
+        Rotate into the lab frame with ``MagneticFields.transform``.
+        """
+        spec = MagneticFieldSpec(B0=B0, mirror_scale=scale_length)
+        return cls(MagneticFieldMode.MIRROR, spec)
 
     @classmethod
     def transform(
         cls,
-        source: ElectricFields,
+        source: MagneticFields,
         frame: WaveFrame,
     ) -> PolarTransformedField:
         """
@@ -451,33 +463,33 @@ class ElectricFields:
         path: str | Path,
         *,
         hdf5_group: str | None = None,
-    ) -> ElectricFields:
-        dataset = load_field_file(path, E_COMPONENTS, hdf5_group=hdf5_group)
-        return cls(ElectricFieldMode.FILE, dataset=dataset)
+    ) -> MagneticFields:
+        dataset = load_field_file(path, B_COMPONENTS, hdf5_group=hdf5_group)
+        return cls(MagneticFieldMode.FILE, dataset=dataset)
 
     @classmethod
-    def from_csv(cls, path: str | Path) -> ElectricFields:
+    def from_csv(cls, path: str | Path) -> MagneticFields:
         return cls.from_file(path)
 
     @classmethod
-    def from_hdf5(cls, path: str | Path, group: str = "electric") -> ElectricFields:
+    def from_hdf5(cls, path: str | Path, group: str = "magnetic") -> MagneticFields:
         return cls.from_file(path, hdf5_group=group)
 
     def load_from_file(self, path: str | Path, *, hdf5_group: str | None = None) -> None:
         """Replace the current field definition with data read from CSV or HDF5."""
-        self.mode = ElectricFieldMode.FILE
-        self.dataset = load_field_file(path, E_COMPONENTS, hdf5_group=hdf5_group)
+        self.mode = MagneticFieldMode.FILE
+        self.dataset = load_field_file(path, B_COMPONENTS, hdf5_group=hdf5_group)
         self._interpolator = FieldInterpolator(self.dataset)
 
     def read_from_csv(self, path: str | Path) -> None:
-        """Load electric field samples from a CSV file."""
+        """Load magnetic field samples from a CSV file."""
         self.load_from_file(path)
 
     def at(self, pos: NDArray[np.floating], t: float = 0.0) -> NDArray[np.float64]:
-        """Evaluate E at a single position and time in the source coordinate frame."""
-        if self.mode == ElectricFieldMode.FILE:
+        """Evaluate B at a single position and time in the source coordinate frame."""
+        if self.mode == MagneticFieldMode.FILE:
             if self._interpolator is None:
-                raise RuntimeError("file-backed electric field is not initialized")
+                raise RuntimeError("file-backed magnetic field is not initialized")
             return self._interpolator.at(pos, t)
         return self._analytical(pos, t)
 
@@ -488,36 +500,36 @@ class ElectricFields:
         z: NDArray[np.floating],
         t: float = 0.0,
     ) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
-        """Evaluate E on a structured mesh (1D coordinate arrays)."""
+        """Evaluate B on a structured mesh (1D coordinate arrays)."""
         xx, yy, zz = np.meshgrid(x, y, z, indexing="ij")
-        ex = np.zeros_like(xx, dtype=np.float64)
-        ey = np.zeros_like(xx, dtype=np.float64)
-        ez = np.zeros_like(xx, dtype=np.float64)
+        bx = np.zeros_like(xx, dtype=np.float64)
+        by = np.zeros_like(xx, dtype=np.float64)
+        bz = np.zeros_like(xx, dtype=np.float64)
 
         for index in np.ndindex(xx.shape):
             field = self.at(np.array([xx[index], yy[index], zz[index]]), t)
-            ex[index], ey[index], ez[index] = field
+            bx[index], by[index], bz[index] = field
 
-        return ex, ey, ez
+        return bx, by, bz
 
-    def __add__(self, other: ElectricFields | PolarTransformedField) -> ElectricFieldsSum:
-        return ElectricFieldsSum([self, other])
+    def __add__(self, other: MagneticFields | PolarTransformedField) -> MagneticFieldsSum:
+        return MagneticFieldsSum([self, other])
 
-    def _wave_phase(self, pos: NDArray[np.floating], t: float, spec: ElectricFieldSpec) -> float:
+    def _wave_phase(self, pos: NDArray[np.floating], t: float, spec: MagneticFieldSpec) -> float:
         return phase(spec.wavevector, pos, spec.omega, t) + spec.phase0
 
     def _polarized_wave_local(
         self,
         pos: NDArray[np.floating],
         t: float,
-        spec: ElectricFieldSpec,
+        spec: MagneticFieldSpec,
         *,
         waveform: Literal["sin", "cos"],
     ) -> NDArray[np.float64]:
         phi = self._wave_phase(pos, t, spec)
         return evaluate_polarized_wave_local(
             phi,
-            amplitude=spec.E0,
+            amplitude=spec.B0,
             polarization_kind=spec.polarization_kind,
             psi=spec.polarization_psi,
             delta=spec.polarization_delta,
@@ -528,32 +540,32 @@ class ElectricFields:
         r = np.asarray(pos, dtype=np.float64)
         spec = self.spec
 
-        if self.mode == ElectricFieldMode.ZERO:
+        if self.mode == MagneticFieldMode.ZERO:
             return np.zeros(3, dtype=np.float64)
-        if self.mode == ElectricFieldMode.UNIFORM:
+        if self.mode == MagneticFieldMode.UNIFORM:
             return spec.amplitude.copy()
-        if self.mode == ElectricFieldMode.LINEAR_RAMP:
+        if self.mode == MagneticFieldMode.LINEAR_RAMP:
             value = spec.offset.copy()
             value[spec.ramp_axis] += spec.ramp_rate * t
             return value
-        if self.mode == ElectricFieldMode.SINUSOIDAL:
+        if self.mode == MagneticFieldMode.SINUSOIDAL:
             phi = self._wave_phase(r, t, spec)
             return spec.amplitude * np.sin(phi)
-        if self.mode == ElectricFieldMode.SINUSOIDAL_LINEAR:
+        if self.mode == MagneticFieldMode.SINUSOIDAL_LINEAR:
             return self._polarized_wave_local(r, t, spec, waveform="sin")
-        if self.mode == ElectricFieldMode.SINUSOIDAL_ELLIPTICAL:
+        if self.mode == MagneticFieldMode.SINUSOIDAL_ELLIPTICAL:
             return self._polarized_wave_local(r, t, spec, waveform="sin")
-        if self.mode == ElectricFieldMode.PLANE_WAVE:
-            if spec.E0 != 0.0:
+        if self.mode == MagneticFieldMode.PLANE_WAVE:
+            if spec.B0 != 0.0:
                 return self._polarized_wave_local(r, t, spec, waveform="cos")
             phi = self._wave_phase(r, t, spec)
             return spec.amplitude * np.cos(phi)
-        if self.mode == ElectricFieldMode.GAUSSIAN_PULSE:
-            if spec.E0 != 0.0:
+        if self.mode == MagneticFieldMode.GAUSSIAN_PULSE:
+            if spec.B0 != 0.0:
                 return evaluate_gaussian_pulse_local(
                     r,
                     t,
-                    amplitude=spec.E0,
+                    amplitude=spec.B0,
                     omega=spec.omega,
                     wavevector=spec.wavevector,
                     center=spec.envelope_center,
@@ -566,12 +578,16 @@ class ElectricFields:
             phi = self._wave_phase(r, t, spec)
             envelope = np.exp(-np.sum(((r - spec.envelope_center) / spec.envelope_width) ** 2))
             return spec.amplitude * envelope * np.cos(phi)
+        if self.mode == MagneticFieldMode.MIRROR:
+            z = r[2]
+            scale = spec.mirror_scale
+            return np.array([0.0, 0.0, spec.B0 * (1.0 + (z / scale) ** 2)], dtype=np.float64)
 
-        raise RuntimeError(f"unsupported electric field mode: {self.mode!r}")
+        raise RuntimeError(f"unsupported magnetic field mode: {self.mode!r}")
 
 
-class ElectricFieldsSum:
-    """Superposition of multiple prescribed electric field sources."""
+class MagneticFieldsSum:
+    """Superposition of multiple prescribed magnetic field sources."""
 
     def __init__(self, sources: list[object]) -> None:
         self.sources = sources
@@ -582,5 +598,5 @@ class ElectricFieldsSum:
             total += source.at(pos, t)
         return total
 
-    def __add__(self, other: object) -> ElectricFieldsSum:
-        return ElectricFieldsSum([*self.sources, other])
+    def __add__(self, other: object) -> MagneticFieldsSum:
+        return MagneticFieldsSum([*self.sources, other])
