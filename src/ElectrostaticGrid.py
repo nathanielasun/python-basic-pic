@@ -57,7 +57,7 @@ class ElectrostaticGrid:
             raise ValueError("nx, ny, nz must be positive")
         if ng < 1:
             raise ValueError("ng must be at least 1 for guard cells")
-        if boundary not in ("periodic", "anode", "reflecting"):
+        if boundary.lower() not in ("periodic", "anode", "reflecting"):
             raise ValueError(f"unsupported boundary condition: {boundary!r}")
 
         self.nx = nx
@@ -67,7 +67,7 @@ class ElectrostaticGrid:
         self.dy = dy
         self.dz = dz
         self.ng = ng
-        self.boundary = boundary
+        self.boundary = boundary.lower()
         self.eps0 = eps0
         self.anode_potential = anode_potential
 
