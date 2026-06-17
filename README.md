@@ -10,29 +10,33 @@ Basic Python 3D particle-in-cell (PIC) implementation — a scaffold for a futur
 
 This project builds **NumPy from source linked against OpenBLAS** instead of using a prebuilt wheel. On macOS, the default PyPI wheel uses Apple Accelerate, which does not give the same OpenBLAS threading control needed for PIC workloads.
 
-## NumPy setup
+## Setup (local OpenBLAS NumPy for multithreading)
 
-Run the setup script for your platform from the repository root. Each script:
+Run **one** platform setup script from the repository root. Each script:
 
-1. Installs system dependencies (OpenBLAS, compilers, `pkg-config`, etc.)
-2. Creates or reuses a `.venv` virtual environment
-3. Clones NumPy **v2.4.6** into a temporary directory
-4. Builds and installs NumPy with `-Dblas=openblas -Dlapack=openblas -Dallow-noblas=false`
-5. Verifies that the installed BLAS backend is `openblas` (not Apple Accelerate)
+1. Creates or reuses **`.venv`** (the project virtual environment)
+2. Installs the NumPy **build toolchain** from **`requirements-build.txt`** into `.venv` (meson, ninja, Cython, …)
+3. Installs **system** OpenBLAS and compiler dependencies
+4. Clones NumPy **v2.4.6** into **`.build/numpy`** (persistent; gitignored)
+5. Compiles and installs NumPy into **`.venv/lib/python*/site-packages/numpy`** with OpenBLAS (`-Dblas=openblas -Dlapack=openblas`)
+6. Verifies the BLAS backend is **`openblas`** (not Apple Accelerate on macOS)
+7. Installs PIC runtime packages from **`requirements.txt`** (SciPy, h5py)
+
+The result is a **local NumPy build** whose matrix kernels use **OpenBLAS**. At runtime you control thread count with **`OPENBLAS_NUM_THREADS`** (see below).
 
 ### macOS
 
 Requires [Homebrew](https://brew.sh) and Xcode Command Line Tools.
 
 ```bash
-./MacOS-numpy-setup.sh
+./MacOS-setup.sh
 source .venv/bin/activate
 ```
 
 ### Linux (Debian/Ubuntu, Fedora, RHEL/CentOS, Arch)
 
 ```bash
-./Unix-numpy-setup.sh
+./Unix-setup.sh
 source .venv/bin/activate
 ```
 
@@ -44,23 +48,21 @@ Requires Python, Git, and [MSYS2](https://www.msys2.org/) (installed via `winget
 
 ```powershell
 Set-ExecutionPolicy RemoteSigned -Scope CurrentUser   # if needed
-.\Windows-numpy-setup.ps1
+.\Windows-setup.ps1
 .\.venv\Scripts\Activate.ps1
 ```
 
 ### Optional environment variables
 
-All setup scripts accept:
-
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `NUMPY_VERSION` | `2.4.6` | NumPy release tag to build |
-| `INSTALL_ROOT` | repository root | Directory containing `.venv` |
+| `INSTALL_ROOT` | repository root | Directory containing `.venv` and `.build/` |
 
 Example:
 
 ```bash
-NUMPY_VERSION=2.4.6 ./Unix-numpy-setup.sh
+NUMPY_VERSION=2.4.6 ./Unix-setup.sh
 ```
 
 ### Verify the install
@@ -69,32 +71,86 @@ After activating `.venv`:
 
 ```bash
 python -c "import numpy as np; c=np.__config__.show(mode='dicts'); print(np.__version__, c['Build Dependencies']['blas']['name'])"
+python -c "import numpy; print(numpy.__file__)"
 ```
 
-Expected output includes `openblas` as the BLAS backend (not `accelerate` or `mkl`).
+Expected: version **2.4.6**, BLAS name **`openblas`**, and `numpy.__file__` under `.venv/lib/.../site-packages/`.
 
-### OpenBLAS threading
+### OpenBLAS multithreading
 
-Control BLAS thread count at runtime with `OPENBLAS_NUM_THREADS`:
+Control BLAS thread count at runtime:
 
 ```bash
-export OPENBLAS_NUM_THREADS=4
+export OPENBLAS_NUM_THREADS=4    # macOS / Linux
+# $env:OPENBLAS_NUM_THREADS = 4  # Windows PowerShell
 ```
+
+The tests in `tests/test_numpy_openblas.py` exercise this build.
+
+### Rebuilding NumPy
+
+Re-run the setup script whenever you want a clean rebuild (new OpenBLAS install, different `NUMPY_VERSION`, or a corrupted build):
+
+```bash
+./MacOS-setup.sh    # or ./Unix-setup.sh / .\Windows-setup.ps1
+```
+
+For a **manual** rebuild without re-running the full script:
+
+```bash
+source .venv/bin/activate
+export PATH="$(pwd)/.venv/bin:$PATH"
+
+# macOS only — ensure pkg-config finds Homebrew OpenBLAS
+export PKG_CONFIG_PATH="$(brew --prefix)/opt/openblas/lib/pkgconfig:$PKG_CONFIG_PATH"
+
+# Optional: force a fresh source checkout
+rm -rf .build/numpy
+
+# Re-clone and compile (same commands the setup script uses)
+git clone --branch v2.4.6 --depth 1 --recurse-submodules \
+  https://github.com/numpy/numpy.git .build/numpy
+
+cd .build/numpy
+pip install . --verbose --no-build-isolation \
+  -Csetup-args=-Dblas=openblas \
+  -Csetup-args=-Dlapack=openblas \
+  -Csetup-args=-Dallow-noblas=false
+
+cd ../..
+python -c "import numpy as np; print(np.__version__, np.__config__.show(mode='dicts')['Build Dependencies']['blas']['name'])"
+```
+
+Always run `import numpy` from the **project root**, not from inside `.build/numpy`, so Python loads the install in `.venv` rather than the source tree.
+
+### Requirements files
+
+| File | When installed | Contents |
+|------|----------------|----------|
+| `requirements-build.txt` | Right after `.venv` is created | meson, ninja, Cython, meson-python, … |
+| `requirements.txt` | After NumPy is built | SciPy, h5py (PIC runtime) |
+
+NumPy is **not** listed in either file. Do not run `pip freeze > requirements.txt` — a source install records a machine-specific `numpy @ file://...` path that will not work elsewhere.
 
 ## Running tests
 
-OpenBLAS build and multithreading tests live in `tests/`:
+After setup completes:
 
 ```bash
 source .venv/bin/activate
 python -m unittest discover -s tests -v
 ```
 
-These tests check that NumPy is linked against OpenBLAS, that basic linear algebra works, and that OpenBLAS threading behaves as expected.
+If NumPy is already in `.venv` and you only need PIC dependencies:
+
+```bash
+source .venv/bin/activate
+pip install -r requirements.txt
+```
 
 ## Known issues and troubleshooting (macOS)
 
-These problems were encountered while setting up NumPy on Apple Silicon macOS during development of this project. The macOS setup script (`MacOS-numpy-setup.sh`) includes guards for each; this section documents symptoms and fixes if you hit them manually.
+These problems were encountered while setting up NumPy on Apple Silicon macOS during development of this project. The macOS setup script (`MacOS-setup.sh`) includes guards for each; this section documents symptoms and fixes if you hit them manually.
 
 ### Apple Accelerate linked instead of OpenBLAS
 
@@ -123,7 +179,7 @@ Expected: `openblas`.
 
 **Symptom:** Metadata generation fails during `pip install` with no ninja on PATH.
 
-**Cause:** `ninja` is installed into `.venv/bin` by pip, but meson-python looks for the `ninja` **executable** on `PATH`. If `.venv/bin` is not on `PATH`, the build fails even though `pip show ninja` succeeds.
+**Cause:** `ninja` is installed into `.venv/bin` by `requirements-build.txt`, but meson-python looks for the `ninja` **executable** on `PATH`. If `.venv/bin` is not on `PATH`, the build fails even though `pip show ninja` succeeds.
 
 **Fix:** Activate the venv or prepend `.venv/bin` to `PATH` before building:
 
@@ -194,14 +250,19 @@ Re-run the setup script after the installer finishes.
 git clone --branch v2.4.6 --depth 1 --recurse-submodules https://github.com/numpy/numpy.git
 ```
 
-Override with `NUMPY_VERSION=2.4.6 ./MacOS-numpy-setup.sh` if needed.
+Override with `NUMPY_VERSION=2.4.6 ./MacOS-setup.sh` if needed.
 
 ## Project layout
 
 ```
 src/                  Simulation code (grids, particles)
 tests/                NumPy OpenBLAS build and threading tests
-MacOS-numpy-setup.sh  macOS NumPy + OpenBLAS setup
-Unix-numpy-setup.sh   Linux NumPy + OpenBLAS setup
-Windows-numpy-setup.ps1  Windows NumPy + OpenBLAS setup
+data/                 CSV field fixtures used by tests
+.build/numpy/         NumPy source clone for local OpenBLAS builds (gitignored)
+.venv/                Project virtualenv; NumPy installs into site-packages here
+requirements-build.txt  NumPy compile toolchain (installed right after .venv)
+requirements.txt      PIC runtime deps (SciPy, h5py) — after NumPy build
+MacOS-setup.sh        macOS setup (.venv + OpenBLAS NumPy + PIC deps)
+Unix-setup.sh         Linux setup
+Windows-setup.ps1     Windows setup
 ```
