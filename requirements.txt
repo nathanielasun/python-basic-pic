@@ -1,0 +1,17 @@
+# PIC runtime dependencies (installed into .venv AFTER NumPy is built).
+# Both libraries here strictly depend on Numpy
+# Full setup (creates .venv, builds local OpenBLAS NumPy, then installs this file):
+#   ./MacOS-setup.sh        (macOS)
+#   ./Unix-setup.sh         (Linux)
+#   .\Windows-setup.ps1     (Windows)
+#
+# Install order inside those scripts:
+#   1. Create .venv
+#   2. pip install -r requirements-build.txt   (meson, ninja, Cython, …)
+#   3. Compile NumPy from .build/numpy → .venv/site-packages
+#   4. pip install -r requirements.txt         (this file)
+#
+# NumPy is intentionally omitted here. Do not ``pip freeze`` it into this file.
+
+h5py==3.16.0
+scipy==1.17.1

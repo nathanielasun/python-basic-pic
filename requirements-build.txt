@@ -1,0 +1,14 @@
+# NumPy source-build toolchain (installed into .venv BEFORE compiling NumPy).
+# The platform setup scripts create .venv first, then run:
+#   pip install -r requirements-build.txt
+# See MacOS-setup.sh, Unix-setup.sh, and Windows-setup.ps1.
+
+build==1.5.0
+Cython==3.2.5
+meson==1.11.1
+meson-python==0.20.0
+ninja==1.13.0
+packaging==26.2
+pyproject-metadata==0.11.0
+pyproject_hooks==1.2.0
+spin==0.15
