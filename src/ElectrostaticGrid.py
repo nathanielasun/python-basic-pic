@@ -530,14 +530,14 @@ class ElectrostaticGrid:
         ez = self._gather_scalar(self.Ez, pos, (0.0, 0.0, 0.0))
         return np.array([ex, ey, ez], dtype=np.float64)
 
-    def gather_boris_fields(
+    def gather_fields(
         self,
         x: float,
         y: float,
         z: float,
         B: NDArray[np.floating] | None = None,
     ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-        """Return (E, B) at a particle position for Boris push (B defaults to zero)."""
+        """Return (E, B) at a particle position for particle push (B defaults to zero)."""
         E = self.gather_e_cic(x, y, z)
         if B is None:
             B_arr = np.zeros(3, dtype=np.float64)
