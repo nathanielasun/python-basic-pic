@@ -1,0 +1,722 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>python-basic-pic API Reference</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="site-header">
+    <h1>python-basic-pic</h1>
+    <span class="subtitle">3D Particle-in-Cell — API Reference</span>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <nav>
+        <div class="nav-group">
+          <div class="nav-group-title">Start</div>
+          <a href="#overview">Overview</a>
+          <a href="#getting-started">Getting Started</a>
+          <a href="#driver-loop">Driver Loop</a>
+        </div>
+        <div class="nav-group">
+          <div class="nav-group-title">Core</div>
+          <a href="#particle">Particle</a>
+          <a href="#pushers">Pushers</a>
+        </div>
+        <div class="nav-group">
+          <div class="nav-group-title">Grids</div>
+          <a href="#yee-grid">YeeGrid</a>
+          <a href="#electrostatic-grid">ElectrostaticGrid</a>
+        </div>
+        <div class="nav-group">
+          <div class="nav-group-title">Prescribed Fields</div>
+          <a href="#electric-fields">ElectricFields</a>
+          <a href="#field-frame">WaveFrame &amp; Transform</a>
+          <a href="#magnetic-fields">MagneticFields</a>
+          <a href="#field-io">field_io</a>
+        </div>
+        <div class="nav-group">
+          <div class="nav-group-title">Examples</div>
+          <a href="#example-es">Electrostatic Push</a>
+          <a href="#example-em">Electromagnetic Push</a>
+          <a href="#example-laser">Oblique Laser Field</a>
+          <a href="#example-gaussian-pulse">Oblique Gaussian Pulse</a>
+          <a href="#example-oblique-b">Oblique B Field</a>
+          <a href="#example-paired-wave">Paired E+B Wave</a>
+          <a href="#example-superposition">Field Superposition</a>
+        </div>
+      </nav>
+    </aside>
+
+    <main class="content">
+
+      <!-- OVERVIEW -->
+      <section id="overview">
+        <h2>Overview</h2>
+        <p class="lead">
+          Python 3D PIC scaffold in <code>src/</code>. Modules are designed for a future C++ port:
+          explicit pushers, staggered Yee EM grids, cell-centered electrostatic grids, and
+          prescribed external E/B fields with polar-transform geometry.
+        </p>
+        <div class="card-grid">
+          <div class="card">
+            <h3><span class="tag tag-class">Class</span> YeeGrid</h3>
+            <p>Staggered FDTD Maxwell solver with CIC deposit/gather.</p>
+          </div>
+          <div class="card">
+            <h3><span class="tag tag-class">Class</span> ElectrostaticGrid</h3>
+            <p>Poisson solve, cell-centered E, periodic/anode/reflecting BCs.</p>
+          </div>
+          <div class="card">
+            <h3><span class="tag tag-class">Class</span> Pushers</h3>
+            <p>Boris, relativistic Boris, Vay, Higuera–Cary velocity updates.</p>
+          </div>
+          <div class="card">
+            <h3><span class="tag tag-class">Class</span> ElectricFields</h3>
+            <p>Analytical and file-backed prescribed E(r, t) with polarization.</p>
+          </div>
+        </div>
+        <table>
+          <thead>
+            <tr><th>Module</th><th>File</th><th>Purpose</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>Particle</code></td><td><code>src/Particle.py</code></td><td>Macro-particle state (r, v, q, m)</td></tr>
+            <tr><td><code>Pushers</code></td><td><code>src/Pushers.py</code></td><td>Explicit velocity integrators</td></tr>
+            <tr><td><code>YeeGrid</code></td><td><code>src/YeeGrid.py</code></td><td>EM fields on staggered Yee mesh</td></tr>
+            <tr><td><code>ElectrostaticGrid</code></td><td><code>src/ElectrostaticGrid.py</code></td><td>φ, E from ρ</td></tr>
+            <tr><td><code>ElectricFields</code></td><td><code>src/ElectricFields.py</code></td><td>Prescribed electric sources</td></tr>
+            <tr><td><code>MagneticFields</code></td><td><code>src/MagneticFields.py</code></td><td>Prescribed magnetic sources</td></tr>
+            <tr><td><code>field_frame</code></td><td><code>src/field_frame.py</code></td><td>Static wave frames &amp; polar transform</td></tr>
+            <tr><td><code>field_io</code></td><td><code>src/field_io.py</code></td><td>CSV/HDF5 load &amp; interpolation</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- GETTING STARTED -->
+      <section id="getting-started">
+        <h2>Getting Started</h2>
+        <p class="lead">Run tests and serve this documentation from the repository root.</p>
+        <div class="callout">
+          <strong>PYTHONPATH:</strong> Add <code>src/</code> when importing modules, or run unit tests which bootstrap the path automatically.
+        </div>
+        <pre><code># Activate venv (see README.md for NumPy/OpenBLAS setup)
+source .venv/bin/activate
+
+# Run tests
+PYTHONPATH=src python3 -m unittest discover -s tests -v
+
+# Serve documentation
+cd docs &amp;&amp; python3 -m http.server 8000
+# Open http://localhost:8000</code></pre>
+      </section>
+
+      <!-- DRIVER LOOP -->
+      <section id="driver-loop">
+        <h2>Typical Driver Loop</h2>
+        <p class="lead">One PIC timestep: deposit → solve fields → gather → push → move → boundaries.</p>
+        <div class="flow-diagram">for step in range(nsteps):
+    t = step * dt
+
+    grid.zero_rho()                    # or zero_currents for EM
+    for p in particles:
+        x, y, z = p.get_position()
+        grid.deposit_rho_cic(x, y, z, p.get_charge())
+
+    grid.solve_fields()                # ES: solve_fields()
+                                       # EM: step_fields(dt)
+
+    for p in particles:
+        x, y, z = p.get_position()
+        E = grid.gather_e_cic(x, y, z) # + efield.at(pos, t) if external
+        B = grid.gather_b_cic(...)     # EM only; + bfield.at(...)
+        v = Pushers.vay(p.get_velocity(), E, B, p.get_charge(), p.get_mass(), dt)
+        p.set_velocity(v)
+        p.move(dt)
+        grid.reflect_particle(p)       # if reflecting BC</div>
+      </section>
+
+      <!-- PARTICLE -->
+      <section id="particle">
+        <h2>Particle</h2>
+        <p class="module-path">src/Particle.py</p>
+        <p>Macro-particle with position, velocity, charge, mass, and species kind. Velocity updates are handled externally by <code>Pushers</code>.</p>
+
+        <div class="panel open" id="particle-init">
+          <button class="panel-header" type="button">
+            <span class="tag tag-class">class</span> Particle.__init__
+            <span class="chevron">▶</span>
+          </button>
+          <div class="panel-body">
+            <div class="signature">Particle(kind, x, y, z, vx, vy, vz, q, m)</div>
+            <p>Creates a particle. <code>pos</code> and <code>vel</code> are NumPy 3-vectors stored internally.</p>
+          </div>
+        </div>
+
+        <div class="panel" id="particle-move">
+          <button class="panel-header" type="button">
+            <span class="tag tag-fn">method</span> move(dt)
+            <span class="chevron">▶</span>
+          </button>
+          <div class="panel-body">
+            <div class="signature">move(dt: float) -&gt; None</div>
+            <p>Explicit position update: <code>pos += vel * dt</code>.</p>
+          </div>
+        </div>
+
+        <div class="panel" id="particle-accessors">
+          <button class="panel-header" type="button">
+            <span class="tag tag-fn">methods</span> Getters / Setters
+            <span class="chevron">▶</span>
+          </button>
+          <div class="panel-body">
+            <table>
+              <tr><th>Getter</th><th>Setter</th></tr>
+              <tr><td><code>get_position()</code></td><td><code>set_position(pos)</code></td></tr>
+              <tr><td><code>get_velocity()</code></td><td><code>set_velocity(vel)</code></td></tr>
+              <tr><td><code>get_charge()</code></td><td><code>set_charge(q)</code></td></tr>
+              <tr><td><code>get_mass()</code></td><td><code>set_mass(m)</code></td></tr>
+              <tr><td><code>get_kind()</code></td><td><code>set_kind(kind)</code></td></tr>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- PUSHERS -->
+      <section id="pushers">
+        <h2>Pushers</h2>
+        <p class="module-path">src/Pushers.py</p>
+        <p>Explicit particle velocity integrators. All pushers accept lab-frame <code>E</code>, <code>B</code> (3-vectors), charge <code>q</code>, mass <code>m</code>, and timestep <code>dt</code>.</p>
+
+        <div class="panel open" id="pushers-kinds">
+          <button class="panel-header" type="button">
+            <span class="tag tag-module">enum</span> PusherKind
+            <span class="chevron">▶</span>
+          </button>
+          <div class="panel-body">
+            <table>
+              <tr><th>Value</th><th>Description</th></tr>
+              <tr><td><code>boris</code></td><td>Classical non-relativistic Boris</td></tr>
+              <tr><td><code>boris_relativistic</code></td><td>Relativistic Boris (u = γv)</td></tr>
+              <tr><td><code>vay</code></td><td>Vay (2007) — improved Lorentz covariance</td></tr>
+              <tr><td><code>higuera_cary</code></td><td>Higuera–Cary (2017) — volume-preserving</td></tr>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel" id="pushers-class">
+          <button class="panel-header" type="button">
+            <span class="tag tag-class">class</span> Pushers
+            <span class="chevron">▶</span>
+          </button>
+          <div class="panel-body">
+            <div class="signature">Pushers.boris(vel, E, B, q, m, dt) -&gt; ndarray</div>
+            <div class="signature">Pushers.boris_relativistic(vel, E, B, q, m, dt, c=1.0) -&gt; ndarray</div>
+            <div class="signature">Pushers.vay(vel, E, B, q, m, dt, c=1.0) -&gt; ndarray</div>
+            <div class="signature">Pushers.higuera_cary(vel, E, B, q, m, dt, c=1.0) -&gt; ndarray</div>
+            <div class="signature">Pushers.push(kind, vel, E, B, q, m, dt, c=1.0) -&gt; ndarray</div>
+            <div class="signature">Pushers.available() -&gt; tuple[PusherKind, ...]</div>
+            <p class="returns">Returns updated velocity 3-vector. Relativistic pushers default to <code>c=1</code> (normalized units).</p>
+            <h4>Helper functions</h4>
+            <ul>
+              <li><code>lorentz_gamma_from_velocity(vel, c)</code></li>
+              <li><code>velocity_to_proper_velocity(vel, c)</code></li>
+              <li><code>proper_velocity_to_velocity(u, c)</code></li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <!-- YEE GRID -->
+      <section id="yee-grid">
+        <h2>YeeGrid</h2>
+        <p class="module-path">src/YeeGrid.py</p>
+        <p>Staggered Yee grid for full EM PIC. Field components live on faces/edges; guard cells support periodic, anode (PEC), or reflecting (PMC-style) boundaries.</p>
+
+        <div class="panel open" id="yee-init">
+          <button class="panel-header" type="button">
+            <span class="tag tag-class">class</span> YeeGrid.__init__
+            <span class="chevron">▶</span>
+          </button>
+          <div class="panel-body">
+            <div class="signature">YeeGrid(nx, ny, nz, dx=1, dy=1, dz=1, ng=1, boundary="periodic", c=1.0)</div>
+            <p>Allocates staggered <code>Ex, Ey, Ez, Bx, By, Bz, Jx, Jy, Jz, rho</code> with guard layers.</p>
+            <table>
+              <tr><th>boundary</th><th>Behavior</th></tr>
+              <tr><td><code>periodic</code></td><td>Wrap fields in guard cells</td></tr>
+              <tr><td><code>anode</code></td><td>PEC walls: tangential E = 0, normal B = 0</td></tr>
+              <tr><td><code>reflecting</code></td><td>PMC-style: normal E = 0, tangential B = 0; particle reflection</td></tr>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel" id="yee-fields">
+          <button class="panel-header" type="button">
+            <span class="tag tag-fn">methods</span> Field updates
+            <span class="chevron">▶</span>
+          </button>
+          <div class="panel-body">
+            <ul>
+              <li><code>step_fields(dt)</code> — one FDTD half-step/leapfrog cycle</li>
+              <li><code>update_b(dt)</code> / <code>update_e(dt)</code> — individual Maxwell updates</li>
+              <li><code>apply_boundaries()</code> — enforce wall/periodic guards</li>
+              <li><code>zero_fields()</code> / <code>zero_currents()</code></li>
+              <li><code>cfl_dt_limit(safety=0.99)</code> — suggested timestep from grid spacing</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="panel" id="yee-particles">
+          <button class="panel-header" type="button">
+            <span class="tag tag-fn">methods</span> Particle coupling (CIC)
+            <span class="chevron">▶</span>
+          </button>
+          <div class="panel-body">
+            <ul>
+              <li><code>deposit_rho_cic(x, y, z, q)</code></li>
+              <li><code>deposit_j_cic(x, y, z, vx, vy, vz, q)</code></li>
+              <li><code>gather_e_cic(x, y, z) -&gt; ndarray</code></li>
+              <li><code>gather_b_cic(x, y, z) -&gt; ndarray</code></li>
+              <li><code>position_in_domain(pos)</code> — wrap or clamp per BC</li>
+              <li><code>reflect_particle(particle)</code> — specular reflection at walls</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <!-- ELECTROSTATIC GRID -->
+      <section id="electrostatic-grid">
+        <h2>ElectrostaticGrid</h2>
+        <p class="module-path">src/ElectrostaticGrid.py</p>
+        <p>Cell-centered electrostatic grid: deposit ρ, solve Poisson for φ, compute E. Supports FFT (periodic) or sparse direct solve (anode/reflecting).</p>
+
+        <div class="panel open" id="es-init">
+          <button class="panel-header" type="button">
+            <span class="tag tag-class">class</span> ElectrostaticGrid.__init__
+            <span class="chevron">▶</span>
+          </button>
+          <div class="panel-body">
+            <div class="signature">ElectrostaticGrid(nx, ny, nz, dx=1, dy=1, dz=1, ng=1, boundary="periodic", eps0=1, anode_potential=0)</div>
+            <p>Fields: <code>rho, phi, Ex, Ey, Ez</code> on cell-centered mesh with guards.</p>
+          </div>
+        </div>
+
+        <div class="panel" id="es-solve">
+          <button class="panel-header" type="button">
+            <span class="tag tag-fn">methods</span> Poisson &amp; field solve
+            <span class="chevron">▶</span>
+          </button>
+          <div class="panel-body">
+            <ul>
+              <li><code>solve_poisson()</code> — φ from ρ</li>
+              <li><code>compute_e_field()</code> — E from −∇φ</li>
+              <li><code>solve_fields()</code> — both steps</li>
+              <li><code>zero_rho()</code> / <code>zero_fields()</code></li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="panel" id="es-particles">
+          <button class="panel-header" type="button">
+            <span class="tag tag-fn">methods</span> Particle coupling
+            <span class="chevron">▶</span>
+          </button>
+          <div class="panel-body">
+            <ul>
+              <li><code>deposit_rho_cic(x, y, z, q)</code></li>
+              <li><code>gather_e_cic(x, y, z) -&gt; ndarray</code></li>
+              <li><code>gather_fields(x, y, z) -&gt; (Ex, Ey, Ez)</code></li>
+              <li><code>reflect_particle(particle)</code></li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <!-- ELECTRIC FIELDS -->
+      <section id="electric-fields">
+        <h2>ElectricFields</h2>
+        <p class="module-path">src/ElectricFields.py</p>
+        <p>Prescribed spacetime-dependent E(r, t). Wave sources are authored in a <strong>fixed local frame</strong> (+z propagation). Spatial rotation into the PIC grid uses <code>ElectricFields.transform</code> only — no time-dependent frame rotation. Shares wave geometry helpers with <code>MagneticFields</code> via <code>field_frame</code>.</p>
+
+        <div class="panel open" id="ef-factories">
+          <button class="panel-header" type="button">
+            <span class="tag tag-fn">classmethods</span> Factory methods
+            <span class="chevron">▶</span>
+          </button>
+          <div class="panel-body">
+            <table>
+              <tr><th>Method</th><th>Description</th></tr>
+              <tr><td><code>zero()</code></td><td>Zero field</td></tr>
+              <tr><td><code>uniform(amplitude)</code></td><td>Constant E vector</td></tr>
+              <tr><td><code>sinusoidal_linear(E0, omega, k_magnitude=..., wavelength=..., psi=0)</code></td><td>Linear pol, sine carrier, local frame</td></tr>
+              <tr><td><code>sinusoidal_elliptical(E0, omega, psi=0, delta=0, ...)</code></td><td>Elliptical pol; <code>delta=0</code> → linear</td></tr>
+              <tr><td><code>plane_wave_local(E0, omega, ...)</code></td><td>Cosine carrier, local frame</td></tr>
+              <tr><td><code>plane_wave_from_direction(...)</code></td><td>Returns <code>PolarTransformedField</code></td></tr>
+              <tr><td><code>plane_wave_incident(theta, phi, ...)</code></td><td>Spherical incidence angles</td></tr>
+              <tr><td><code>gaussian_pulse_local(E0, omega, center=..., width=..., psi=0, delta=0)</code></td><td>Gaussian-enveloped cosine pulse, local frame</td></tr>
+              <tr><td><code>gaussian_pulse_from_direction(...)</code></td><td>Returns <code>PolarTransformedField</code></td></tr>
+              <tr><td><code>gaussian_pulse_incident(theta, phi, ...)</code></td><td>Oblique Gaussian pulse via spherical angles</td></tr>
+              <tr><td><code>gaussian_pulse(...)</code></td><td>Legacy lab-frame Gaussian pulse</td></tr>
+              <tr><td><code>linear_ramp(ramp_rate, axis="z")</code></td><td>Time-ramped offset</td></tr>
+              <tr><td><code>from_csv(path)</code> / <code>from_hdf5(path, group)</code></td><td>File-backed fields</td></tr>
+              <tr><td><code>transform(source, frame)</code></td><td>Static polar transform wrapper</td></tr>
+            </table>
+            <h4>Polarization notes</h4>
+            <ul>
+              <li><code>delta = 0</code> — linear polarization (default)</li>
+              <li><code>delta = π/2</code>, <code>psi = π/4</code> — circular polarization</li>
+            </ul>
+            <h4>Legacy lab-frame APIs</h4>
+            <p><code>sinusoidal(amplitude, ...)</code>, <code>plane_wave(...)</code>, <code>gaussian_pulse(amplitude, wavevector, ...)</code> — fixed lab-frame amplitude vectors and envelope geometry.</p>
+          </div>
+        </div>
+
+        <div class="panel" id="ef-methods">
+          <button class="panel-header" type="button">
+            <span class="tag tag-fn">methods</span> Evaluation &amp; composition
+            <span class="chevron">▶</span>
+          </button>
+          <div class="panel-body">
+            <div class="signature">at(pos, t=0.0) -&gt; ndarray</div>
+            <div class="signature">on_grid(x, y, z, t=0.0) -&gt; (Ex, Ey, Ez)</div>
+            <p>Combine sources with <code>+</code> (returns <code>ElectricFieldsSum</code>). Works with <code>PolarTransformedField</code> as well.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- FIELD FRAME -->
+      <section id="field-frame">
+        <h2>WaveFrame &amp; Polar Transform</h2>
+        <p class="module-path">src/field_frame.py</p>
+        <p>Static local-to-lab geometry shared by electric and magnetic prescribed fields. The frame does <em>not</em> rotate in time; temporal behavior is in wave phase and elliptical parameters.</p>
+
+        <div class="panel" id="wf-shared">
+          <button class="panel-header" type="button">
+            <span class="tag tag-fn">functions</span> Shared wave helpers
+            <span class="chevron">▶</span>
+          </button>
+          <div class="panel-body">
+            <div class="signature">resolve_k_magnitude(wavevector=, k_magnitude=, wavelength=)</div>
+            <div class="signature">local_wavevector(k_magnitude) -&gt; [0, 0, k]</div>
+            <div class="signature">evaluate_polarized_wave_local(phi, amplitude, polarization_kind, psi, delta, waveform)</div>
+            <div class="signature">normalize_envelope_width(width) -&gt; (3,)</div>
+            <div class="signature">gaussian_envelope_local(r_local, center, width) -&gt; float</div>
+            <div class="signature">evaluate_gaussian_pulse_local(r, t, amplitude, omega, wavevector, center, width, ...)</div>
+            <p>Used by both <code>ElectricFields</code> and <code>MagneticFields</code> for local-frame sinusoidal/elliptical waves and Gaussian pulses. The Gaussian envelope is axis-aligned in local coordinates; <code>PolarTransformedField</code> rotates both the envelope sampling point and the field vector into the lab frame.</p>
+          </div>
+        </div>
+
+        <div class="panel open" id="wf-waveframe">
+          <button class="panel-header" type="button">
+            <span class="tag tag-class">class</span> WaveFrame
+            <span class="chevron">▶</span>
+          </button>
+          <div class="panel-body">
+            <div class="signature">WaveFrame.from_basis(k_direction, polarization=None, origin=None)</div>
+            <div class="signature">WaveFrame.from_spherical(theta, phi, pol_angle=0, origin=None)</div>
+            <div class="signature">WaveFrame.identity(origin=None)</div>
+            <p>Properties: <code>e1</code>, <code>e2</code>, <code>k_hat</code> (lab-frame basis vectors).</p>
+            <ul>
+              <li><code>position_to_local(r_lab)</code> / <code>position_to_lab(r_local)</code></li>
+              <li><code>vector_to_lab(v_local)</code> / <code>vector_to_local(v_lab)</code></li>
+              <li><code>wavevector_lab(k_magnitude)</code></li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="panel" id="wf-transform">
+          <button class="panel-header" type="button">
+            <span class="tag tag-class">class</span> PolarTransformedField
+            <span class="chevron">▶</span>
+          </button>
+          <div class="panel-body">
+            <div class="signature">PolarTransformedField(source, frame)  # alias: TransformedField</div>
+            <p>Evaluates <code>source</code> at local coordinates and rotates the vector into the lab frame (works for E or B):</p>
+            <pre><code>r_local = Rᵀ (r_lab − origin)
+F_lab   = R F_local(r_local, t)</code></pre>
+            <p>Attributes: <code>.source</code>, <code>.frame</code>, <code>.at(pos, t)</code>.</p>
+            <p>Superposition via <code>+</code> dispatches to <code>ElectricFieldsSum</code> or <code>MagneticFieldsSum</code> based on the operand type.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- MAGNETIC FIELDS -->
+      <section id="magnetic-fields">
+        <h2>MagneticFields</h2>
+        <p class="module-path">src/MagneticFields.py</p>
+        <p>Prescribed B(r, t) with the same local-frame + polar-transform design as <code>ElectricFields</code>. Wave sources propagate along local +z; rotate into the PIC grid with <code>MagneticFields.transform</code>. No time-dependent frame rotation.</p>
+
+        <div class="panel open" id="mf-factories">
+          <button class="panel-header" type="button">
+            <span class="tag tag-fn">classmethods</span> Factory methods
+            <span class="chevron">▶</span>
+          </button>
+          <div class="panel-body">
+            <table>
+              <tr><th>Method</th><th>Description</th></tr>
+              <tr><td><code>zero()</code></td><td>Zero field</td></tr>
+              <tr><td><code>uniform(amplitude)</code></td><td>Constant B vector (local components before transform)</td></tr>
+              <tr><td><code>sinusoidal_linear(B0, omega, k_magnitude=..., wavelength=..., psi=0)</code></td><td>Linear pol, sine carrier, local frame</td></tr>
+              <tr><td><code>sinusoidal_elliptical(B0, omega, psi=0, delta=0, ...)</code></td><td>Elliptical pol; <code>delta=0</code> → linear</td></tr>
+              <tr><td><code>plane_wave_local(B0, omega, ...)</code></td><td>Cosine carrier, local frame</td></tr>
+              <tr><td><code>plane_wave_from_direction(...)</code></td><td>Returns <code>PolarTransformedField</code></td></tr>
+              <tr><td><code>plane_wave_incident(theta, phi, ...)</code></td><td>Spherical incidence angles</td></tr>
+              <tr><td><code>mirror_local(B0, scale_length=1.0)</code></td><td>Mirror profile along local +z</td></tr>
+              <tr><td><code>gaussian_pulse_local(B0, omega, center=..., width=..., psi=0, delta=0)</code></td><td>Gaussian-enveloped cosine pulse, local frame</td></tr>
+              <tr><td><code>gaussian_pulse_from_direction(...)</code></td><td>Returns <code>PolarTransformedField</code></td></tr>
+              <tr><td><code>gaussian_pulse_incident(theta, phi, ...)</code></td><td>Oblique Gaussian pulse via spherical angles</td></tr>
+              <tr><td><code>gaussian_pulse(...)</code></td><td>Legacy lab-frame Gaussian pulse</td></tr>
+              <tr><td><code>linear_ramp(ramp_rate, axis="z")</code></td><td>Time-ramped offset</td></tr>
+              <tr><td><code>from_csv(path)</code> / <code>from_hdf5(path, group)</code></td><td>File-backed B</td></tr>
+              <tr><td><code>transform(source, frame)</code></td><td>Static polar transform wrapper</td></tr>
+            </table>
+            <h4>Legacy lab-frame APIs</h4>
+            <p><code>sinusoidal(amplitude, ...)</code>, <code>plane_wave(...)</code>, <code>gaussian_pulse(amplitude, wavevector, ...)</code> — fixed lab-frame amplitude vectors (same as early API).</p>
+          </div>
+        </div>
+
+        <div class="panel" id="mf-methods">
+          <button class="panel-header" type="button">
+            <span class="tag tag-fn">methods</span> Evaluation &amp; composition
+            <span class="chevron">▶</span>
+          </button>
+          <div class="panel-body">
+            <div class="signature">at(pos, t=0.0) -&gt; ndarray</div>
+            <div class="signature">on_grid(x, y, z, t=0.0) -&gt; (Bx, By, Bz)</div>
+            <p>Combine sources with <code>+</code> (returns <code>MagneticFieldsSum</code>). Works with <code>PolarTransformedField</code> as well.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- FIELD IO -->
+      <section id="field-io">
+        <h2>field_io</h2>
+        <p class="module-path">src/field_io.py</p>
+        <p>Shared CSV/HDF5 loading and spacetime interpolation for prescribed fields.</p>
+
+        <div class="panel open" id="fio-dataset">
+          <button class="panel-header" type="button">
+            <span class="tag tag-class">class</span> FieldDataset
+            <span class="chevron">▶</span>
+          </button>
+          <div class="panel-body">
+            <p>Structured or unstructured samples. Properties: <code>is_structured</code>, <code>is_time_dependent</code>.</p>
+            <p>CSV columns: <code>x, y, z, Ex, Ey, Ez</code> (or B components) with optional <code>t</code> and <code># key=value</code> metadata header.</p>
+          </div>
+        </div>
+
+        <div class="panel" id="fio-load">
+          <button class="panel-header" type="button">
+            <span class="tag tag-fn">functions</span> Loading
+            <span class="chevron">▶</span>
+          </button>
+          <div class="panel-body">
+            <div class="signature">load_field_csv(path, component_names)</div>
+            <div class="signature">load_field_hdf5(path, group, component_names)</div>
+            <div class="signature">load_field_file(path, component_names, hdf5_group=None)</div>
+          </div>
+        </div>
+
+        <div class="panel" id="fio-interp">
+          <button class="panel-header" type="button">
+            <span class="tag tag-class">class</span> FieldInterpolator
+            <span class="chevron">▶</span>
+          </button>
+          <div class="panel-body">
+            <div class="signature">FieldInterpolator(dataset).at(pos, t=0.0) -&gt; ndarray</div>
+            <p>Uses <code>RegularGridInterpolator</code> (structured) or <code>LinearNDInterpolator</code> (unstructured).</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- EXAMPLES -->
+      <section id="example-es">
+        <h2>Example: Electrostatic Particle Push</h2>
+        <p class="lead">Uniform background E plus self-consistent grid field on an electrostatic grid.</p>
+        <pre><code>import sys
+sys.path.insert(0, "src")
+
+import numpy as np
+from Particle import Particle
+from ElectrostaticGrid import ElectrostaticGrid
+from ElectricFields import ElectricFields
+from Pushers import Pushers
+
+grid = ElectrostaticGrid(32, 32, 32, dx=0.1, boundary="periodic")
+efield = ElectricFields.uniform([0.0, 0.0, 1e5])
+
+p = Particle(kind="electron", x=1.6, y=1.6, z=1.6,
+               vx=0.0, vy=0.0, vz=1e5, q=-1.602e-19, m=9.109e-31)
+
+dt = 1e-12
+for step in range(100):
+    t = step * dt
+    grid.zero_rho()
+    pos = p.get_position()
+    grid.deposit_rho_cic(*pos, p.get_charge())
+    grid.solve_fields()
+
+    E = grid.gather_e_cic(*pos) + efield.at(pos, t)
+    v = Pushers.boris(p.get_velocity(), E, np.zeros(3), p.get_charge(), p.get_mass(), dt)
+    p.set_velocity(v)
+    p.move(dt)</code></pre>
+      </section>
+
+      <section id="example-em">
+        <h2>Example: Electromagnetic Push</h2>
+        <p class="lead">Yee grid with an oblique guide field via polar transform.</p>
+        <pre><code>import numpy as np
+from YeeGrid import YeeGrid
+from MagneticFields import MagneticFields
+from field_frame import WaveFrame
+from Pushers import Pushers
+
+grid = YeeGrid(64, 64, 64, dx=1e-3, boundary="periodic")
+
+local_B = MagneticFields.uniform([0.0, 0.0, 0.5])
+frame = WaveFrame.from_spherical(theta=np.deg2rad(20), phi=0.0)
+bfield = MagneticFields.transform(local_B, frame)
+
+dt = grid.cfl_dt_limit()
+# ... deposit, step_fields(dt), then per particle:
+E = grid.gather_e_cic(x, y, z)
+B = grid.gather_b_cic(x, y, z) + bfield.at(p.get_position(), t)
+v = Pushers.boris_relativistic(p.get_velocity(), E, B, p.get_charge(), p.get_mass(), dt)</code></pre>
+      </section>
+
+      <section id="example-laser">
+        <h2>Example: Oblique Laser via Polar Transform</h2>
+        <p class="lead">Author a wave in local coordinates, rotate into the PIC cube with a static frame.</p>
+        <pre><code>import numpy as np
+from ElectricFields import ElectricFields
+from field_frame import WaveFrame
+
+k0 = 2 * np.pi / 800e-9
+omega = 2 * np.pi * 3e14
+
+local = ElectricFields.sinusoidal_elliptical(
+    E0=1e10,
+    omega=omega,
+    k_magnitude=k0,
+    psi=np.pi / 4,
+    delta=np.pi / 2,   # circular polarization
+)
+
+frame = WaveFrame.from_spherical(
+    theta=np.deg2rad(30),   # incidence polar angle from +z
+    phi=np.deg2rad(45),     # azimuth in xy-plane
+)
+
+laser = ElectricFields.transform(local, frame)
+
+pos = np.array([1e-6, 2e-6, 0.0])
+E_ext = laser.at(pos, t=1e-15)</code></pre>
+      </section>
+
+      <section id="example-gaussian-pulse">
+        <h2>Example: Oblique Gaussian Laser Pulse</h2>
+        <p class="lead">Author a finite Gaussian pulse in local coordinates (envelope along local axes, propagation along local +z), then rotate into the PIC cube with a static frame.</p>
+        <pre><code>import numpy as np
+from ElectricFields import ElectricFields
+from field_frame import WaveFrame
+
+k0 = 2 * np.pi / 800e-9
+omega = 2 * np.pi * 3e14
+
+local = ElectricFields.gaussian_pulse_local(
+    E0=1e10,
+    omega=omega,
+    k_magnitude=k0,
+    center=(0.0, 0.0, 0.0),
+    width=(5e-6, 5e-6, 10e-6),   # w0, w0, z_R in local frame
+    psi=0.0,
+)
+
+frame = WaveFrame.from_spherical(
+    theta=np.deg2rad(30),
+    phi=np.deg2rad(45),
+)
+
+pulse = ElectricFields.transform(local, frame)
+# or: pulse = ElectricFields.gaussian_pulse_incident(
+#     E0=1e10, omega=omega, theta=np.deg2rad(30), phi=np.deg2rad(45),
+#     k_magnitude=k0, width=(5e-6, 5e-6, 10e-6),
+# )
+
+pos = np.array([1e-6, 2e-6, 0.0])
+E_ext = pulse.at(pos, t=1e-15)</code></pre>
+      </section>
+
+      <section id="example-oblique-b">
+        <h2>Example: Oblique Mirror / Solenoid B</h2>
+        <p class="lead">Mirror-field profile authored along local +z, rotated into the lab frame.</p>
+        <pre><code>import numpy as np
+from MagneticFields import MagneticFields
+from field_frame import WaveFrame
+
+local = MagneticFields.mirror_local(B0=0.5, scale_length=2.0)
+frame = WaveFrame.from_spherical(theta=np.deg2rad(15), phi=np.deg2rad(30))
+bfield = MagneticFields.transform(local, frame)
+
+pos = np.array([0.1, 0.0, 0.2])
+B_ext = bfield.at(pos, t=0.0)</code></pre>
+      </section>
+
+      <section id="example-paired-wave">
+        <h2>Example: Paired Oblique E + B Wave</h2>
+        <p class="lead">For vacuum EM waves, B is related to E by <code>B = (k̂ × E) / ω</code> (SI units). Build E from the transform API, then set B amplitude and pol angle accordingly.</p>
+        <pre><code>import numpy as np
+from ElectricFields import ElectricFields
+from MagneticFields import MagneticFields
+from field_frame import WaveFrame
+
+omega = 2 * np.pi * 3e14
+k0 = omega / 3e8
+E0 = 1e8
+B0 = E0 / 3e8   # |B| = |E| / c for plane wave in vacuum
+
+frame = WaveFrame.from_spherical(theta=np.deg2rad(25), phi=np.deg2rad(10))
+
+efield = ElectricFields.transform(
+    ElectricFields.sinusoidal_linear(E0=E0, omega=omega, k_magnitude=k0),
+    frame,
+)
+bfield = MagneticFields.transform(
+    MagneticFields.sinusoidal_linear(B0=B0, omega=omega, k_magnitude=k0, psi=np.pi / 2),
+    frame,
+)
+
+pos = np.zeros(3)
+t = 0.0
+E_ext = efield.at(pos, t)
+B_ext = bfield.at(pos, t)</code></pre>
+      </section>
+
+      <section id="example-superposition">
+        <h2>Example: Field Superposition</h2>
+        <p class="lead">Combine bias, file-backed, and transformed sources with <code>+</code>.</p>
+        <pre><code>from ElectricFields import ElectricFields
+from field_frame import WaveFrame
+
+bias = ElectricFields.uniform([0.0, 0.0, 1e4])
+file_field = ElectricFields.from_csv("data/electric_uniform_z.csv")
+
+local_pulse = ElectricFields.sinusoidal_linear(
+    E0=5e9, omega=2e15, k_magnitude=1e7,
+)
+frame = WaveFrame.from_spherical(theta=0.2, phi=0.0)
+pulse = ElectricFields.transform(local_pulse, frame)
+
+efield = bias + file_field + pulse
+E_total = efield.at(particle.get_position(), t=step * dt)</code></pre>
+      </section>
+
+    </main>
+  </div>
+
+  <script src="js/docs.js"></script>
+</body>
+</html>
