@@ -26,7 +26,7 @@ from typing import Literal
 import numpy as np
 from numpy.typing import NDArray
 
-from field_frame import (
+from .field_frame import (
     PolarTransformedField,
     PolarizationKind,
     WaveFrame,
@@ -36,7 +36,7 @@ from field_frame import (
     normalize_envelope_width,
     resolve_k_magnitude,
 )
-from field_io import (
+from .field_io import (
     FieldDataset,
     FieldInterpolator,
     load_field_file,

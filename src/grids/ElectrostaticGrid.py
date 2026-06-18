@@ -27,7 +27,7 @@ import scipy.sparse
 import scipy.sparse.linalg
 from numpy.typing import NDArray
 
-from grid_common import periodic_field as _periodic_field
+from .grid_common import periodic_field as _periodic_field
 
 if TYPE_CHECKING:
     from Particle import Particle
@@ -107,7 +107,7 @@ class ElectrostaticGrid:
         if self._particle_backend != "numba" or self.boundary != "periodic":
             return
         try:
-            from pic_kernels import get_num_threads
+            from .pic_kernels import get_num_threads
 
             n_threads = get_num_threads()
             self._deposit_partial = np.zeros((n_threads, self.rho.size), dtype=np.float64)
@@ -136,7 +136,7 @@ class ElectrostaticGrid:
         if requested != "numba":
             return "numpy"
         try:
-            from pic_kernels import HAS_NUMBA, warmup_kernels
+            from .pic_kernels import HAS_NUMBA, warmup_kernels
 
             if not HAS_NUMBA:
                 return "numpy"
@@ -606,7 +606,7 @@ class ElectrostaticGrid:
         cell_volume = self.dx * self.dy * self.dz
         values = charges_arr / cell_volume
         if self._particle_backend == "numba" and self.boundary == "periodic":
-            from pic_kernels import deposit_cic_periodic
+            from .pic_kernels import deposit_cic_periodic
 
             if self._deposit_partial is None:
                 self._init_deposit_partial()
@@ -648,7 +648,7 @@ class ElectrostaticGrid:
         """Trilinear interpolation of E for ``(N, 3)`` particle positions; returns ``(N, 3)``."""
         pos = self.position_in_domain_batch(positions, in_place=in_place)
         if self._particle_backend == "numba" and self.boundary == "periodic":
-            from pic_kernels import gather_e_cic_periodic
+            from .pic_kernels import gather_e_cic_periodic
 
             return gather_e_cic_periodic(
                 self.Ex,

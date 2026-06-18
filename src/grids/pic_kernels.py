@@ -2,7 +2,7 @@
 Numba parallel kernels for electrostatic PIC particle operations.
 
 All kernels assume periodic boundaries and grid-node CIC interpolation
-with ghost padding ``ng`` matching :class:`ElectrostaticGrid`.
+with ghost padding ``ng`` matching :class:`grids.ElectrostaticGrid`.
 """
 
 from __future__ import annotations

@@ -23,7 +23,7 @@ from typing import Literal
 import numpy as np
 from numpy.typing import NDArray
 
-from field_frame import (
+from .field_frame import (
     PolarTransformedField,
     PolarizationKind,
     WaveFrame,
@@ -35,7 +35,7 @@ from field_frame import (
     normalize_envelope_width,
     resolve_k_magnitude,
 )
-from field_io import (
+from .field_io import (
     FieldDataset,
     FieldInterpolator,
     load_field_file,
@@ -677,7 +677,7 @@ def plane_wave_em_pair(
     Returns ``(ElectricFields, MagneticFields)`` for future EM-PIC drivers; live
     electrostatic examples remain B = 0.
     """
-    from MagneticFields import MagneticFields
+    from .MagneticFields import MagneticFields
 
     k_mag = resolve_k_magnitude(wavevector=None, k_magnitude=k_magnitude, wavelength=wavelength)
     if c is None:

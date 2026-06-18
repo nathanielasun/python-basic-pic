@@ -223,7 +223,7 @@ def evaluate_gaussian_pulse_local(
     The envelope is axis-aligned in local coordinates; rotate into the lab frame
     with ``PolarTransformedField``.
     """
-    from field_io import phase
+    from .field_io import phase
 
     r_arr = np.asarray(r, dtype=np.float64)
     phi = phase(wavevector, r_arr, omega, t) + phase0
@@ -414,8 +414,8 @@ class PolarTransformedField:
 
     def __add__(self, other: object) -> object:
         """Superpose with another prescribed field; defers to typed sum helpers."""
-        from ElectricFields import ElectricFields, ElectricFieldsSum
-        from MagneticFields import MagneticFields, MagneticFieldsSum
+        from .ElectricFields import ElectricFields, ElectricFieldsSum
+        from .MagneticFields import MagneticFields, MagneticFieldsSum
 
         if isinstance(other, (ElectricFields, ElectricFieldsSum)):
             return ElectricFieldsSum([self, other])

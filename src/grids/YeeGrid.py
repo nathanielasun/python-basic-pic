@@ -37,8 +37,8 @@ if TYPE_CHECKING:
 
 BoundaryKind = Literal["periodic", "anode", "reflecting"]
 
-from grid_common import periodic_along_axis as _periodic_along_axis
-from grid_common import periodic_field as _periodic_field
+from .grid_common import periodic_along_axis as _periodic_along_axis
+from .grid_common import periodic_field as _periodic_field
 
 def _shape_ex(nx: int, ny: int, nz: int, ng: int) -> tuple[int, int, int]:
     return nx + 1 + 2 * ng, ny + 2 * ng, nz + 2 * ng
@@ -389,7 +389,7 @@ class YeeGrid:
 
         if self.boundary == "periodic":
             try:
-                from pic_kernels import deposit_cic_periodic, get_num_threads
+                from .pic_kernels import deposit_cic_periodic, get_num_threads
 
                 partial = np.zeros((get_num_threads(), self.rho.size), dtype=np.float64)
                 deposit_cic_periodic(
