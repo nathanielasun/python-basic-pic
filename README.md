@@ -61,8 +61,6 @@ python examples/01_kr_rf_plasma.py --no-animate
 python examples/02_hydrogen_thermal.py --steps 100 --no-animate
 ```
 
-Legacy entry point [`3DPIC.py`](3DPIC.py) delegates to `examples/01_kr_rf_plasma.py`.
-
 Flags: `--steps N`, `--seed N`, `--backend {numba,numpy}`, `--threads N`, `--no-animate`, `--frame-subsample N`, `--output-dir PATH`.
 
 ## Documentation
