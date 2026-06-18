@@ -300,6 +300,26 @@ class FieldInterpolator:
             dtype=np.float64,
         )
 
+    def at_batch(self, positions: NDArray[np.floating], t: float = 0.0) -> NDArray[np.float64]:
+        """Evaluate the field at ``(N, 3)`` positions; returns ``(N, 3)``."""
+        pos = np.asarray(positions, dtype=np.float64)
+        if pos.ndim != 2 or pos.shape[1] != 3:
+            raise ValueError("positions must have shape (N, 3)")
+        nearest_time = float(self._time_values[int(np.argmin(np.abs(self._time_values - t)))])
+        self._build_interpolators(nearest_time)
+
+        n = pos.shape[0]
+        out = np.empty((n, 3), dtype=np.float64)
+        if self.dataset.is_structured:
+            sample = np.column_stack([pos[:, 2], pos[:, 1], pos[:, 0]])
+            for j, name in enumerate(self.dataset.component_names):
+                out[:, j] = np.asarray(self._spatial[name](sample)).reshape(-1)
+            return out
+
+        for i in range(n):
+            out[i] = self.at(pos[i], t)
+        return out
+
 
 def wave_vector(kx: float, ky: float, kz: float) -> NDArray[np.float64]:
     return np.array([kx, ky, kz], dtype=np.float64)
@@ -307,3 +327,17 @@ def wave_vector(kx: float, ky: float, kz: float) -> NDArray[np.float64]:
 
 def phase(k: NDArray[np.floating], r: NDArray[np.floating], omega: float, t: float) -> float:
     return float(np.dot(k, r) - omega * t)
+
+
+def phase_batch(
+    k: NDArray[np.floating],
+    positions: NDArray[np.floating],
+    omega: float,
+    t: float,
+) -> NDArray[np.float64]:
+    """Vectorized wave phase ``k·r - omega*t`` for ``(N, 3)`` positions."""
+    pos = np.asarray(positions, dtype=np.float64)
+    k_arr = np.asarray(k, dtype=np.float64)
+    if pos.ndim != 2 or pos.shape[1] != 3:
+        raise ValueError("positions must have shape (N, 3)")
+    return pos @ k_arr - omega * t
