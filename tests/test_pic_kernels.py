@@ -60,6 +60,7 @@ class TestPicKernels(unittest.TestCase):
         pos = grid.position_in_domain_batch(positions)
 
         grid_np._deposit_scalar_batch(grid_np.rho, pos, values, (0.0, 0.0, 0.0))
+        partial = np.zeros((1, grid_nb.rho.size), dtype=np.float64)
         deposit_cic_periodic(
             grid_nb.rho,
             pos,
@@ -71,6 +72,7 @@ class TestPicKernels(unittest.TestCase):
             grid_nb.ny,
             grid_nb.nz,
             grid_nb.ng,
+            partial,
         )
 
         np.testing.assert_allclose(grid_nb.rho, grid_np.rho, rtol=1e-10, atol=1e-12)

@@ -13,7 +13,7 @@ _SRC = Path(__file__).resolve().parents[1] / "src"
 if _SRC.is_dir() and str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from Pushers import Pushers, boris_push, lorentz_gamma_from_velocity
+from Pushers import Pushers, boris_push, boris_push_batch, lorentz_gamma_from_velocity
 
 
 class TestPushers(unittest.TestCase):
@@ -24,6 +24,31 @@ class TestPushers(unittest.TestCase):
         v1 = boris_push(v0, E, np.zeros(3), q, m, dt)
         expected = v0 + (q / m) * E * dt
         self.assertTrue(np.allclose(v1, expected, rtol=1e-12))
+
+    def test_boris_batch_matches_scalar(self) -> None:
+        rng = np.random.default_rng(4)
+        vel = rng.normal(size=(10, 3))
+        efield = rng.normal(size=(10, 3))
+        bfield = np.zeros((10, 3))
+        q, m, dt = -1.0, 2.0, 1e-12
+        batch = boris_push_batch(vel, efield, bfield, q, m, dt)
+        dispatcher = Pushers.push_batch("boris", vel, efield, bfield, q, m, dt)
+        self.assertTrue(np.allclose(batch, dispatcher, rtol=1e-12))
+        for i in range(10):
+            scalar = boris_push(vel[i], efield[i], bfield[i], q, m, dt)
+            self.assertTrue(np.allclose(batch[i], scalar, rtol=1e-12))
+
+    def test_push_batch_scalar_fallback_matches_scalar(self) -> None:
+        rng = np.random.default_rng(7)
+        vel = rng.normal(scale=0.05, size=(6, 3))
+        efield = rng.normal(scale=0.1, size=(6, 3))
+        bfield = np.array([[0.0, 0.0, 0.8]] * 6)
+        q, m, dt, c = 1.0, 1.0, 0.005, 1.0
+        for kind in ("boris_relativistic", "vay", "higuera_cary"):
+            batch = Pushers.push_batch(kind, vel, efield, bfield, q, m, dt, c=c)
+            for i in range(6):
+                scalar = Pushers.push(kind, vel[i], efield[i], bfield[i], q, m, dt, c=c)
+                self.assertTrue(np.allclose(batch[i], scalar, rtol=1e-12, atol=1e-12))
 
     def test_boris_uniform_b_preserves_speed(self) -> None:
         q, m, dt = 1.0, 1.0, 0.05

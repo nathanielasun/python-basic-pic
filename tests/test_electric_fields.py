@@ -181,5 +181,30 @@ class TestElectricFieldsWaveFrame(unittest.TestCase):
         self.assertTrue(np.allclose(pulse.at(pos_lab, t=0.25), expected, rtol=1e-10))
 
 
+class TestElectricFieldsAtBatch(unittest.TestCase):
+    def test_at_batch_matches_loop(self) -> None:
+        rng = np.random.default_rng(0)
+        positions = rng.uniform(0.0, 2.0, size=(50, 3))
+        cases = [
+            ElectricFields.uniform([1.0, 2.0, 3.0]),
+            ElectricFields.sinusoidal_linear(E0=2.0, omega=3.0, k_magnitude=1.5, psi=0.3),
+            ElectricFields.plane_wave([1.0, 0.0, 0.5], omega=2.0, wavevector=[0.0, 0.0, 1.2]),
+        ]
+        for efield in cases:
+            batch = efield.at_batch(positions, t=0.25)
+            loop = np.array([efield.at(positions[i], 0.25) for i in range(positions.shape[0])])
+            self.assertTrue(np.allclose(batch, loop, rtol=1e-12, atol=1e-12))
+
+    def test_transformed_at_batch(self) -> None:
+        local = ElectricFields.sinusoidal_linear(E0=1.0, omega=2.0, k_magnitude=0.8)
+        frame = WaveFrame.from_spherical(0.4, 1.1)
+        efield = ElectricFields.transform(local, frame)
+        rng = np.random.default_rng(3)
+        positions = rng.uniform(0.0, 1.0, size=(20, 3))
+        batch = efield.at_batch(positions, t=0.1)
+        loop = np.array([efield.at(positions[i], 0.1) for i in range(20)])
+        self.assertTrue(np.allclose(batch, loop, rtol=1e-12, atol=1e-12))
+
+
 if __name__ == "__main__":
     unittest.main()
