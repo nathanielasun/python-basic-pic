@@ -27,16 +27,21 @@
           <a href="#pushers">Pushers</a>
         </div>
         <div class="nav-group">
-          <div class="nav-group-title">Grids</div>
-          <a href="#yee-grid">YeeGrid</a>
+          <div class="nav-group-title">grids/</div>
           <a href="#electrostatic-grid">ElectrostaticGrid</a>
+          <a href="#yee-grid">YeeGrid</a>
+          <a href="#pic-kernels">pic_kernels</a>
         </div>
         <div class="nav-group">
-          <div class="nav-group-title">Prescribed Fields</div>
+          <div class="nav-group-title">fields/</div>
           <a href="#electric-fields">ElectricFields</a>
           <a href="#field-frame">WaveFrame &amp; Transform</a>
           <a href="#magnetic-fields">MagneticFields</a>
           <a href="#field-io">field_io</a>
+        </div>
+        <div class="nav-group">
+          <div class="nav-group-title">Drivers</div>
+          <a href="#example-drivers">examples/ Drivers</a>
         </div>
         <div class="nav-group">
           <div class="nav-group-title">Examples</div>
@@ -57,26 +62,27 @@
       <section id="overview">
         <h2>Overview</h2>
         <p class="lead">
-          Python 3D PIC scaffold in <code>src/</code>. Modules are designed for a future C++ port:
-          explicit pushers, staggered Yee EM grids, cell-centered electrostatic grids, and
-          prescribed external E/B fields with polar-transform geometry.
+          Python 3D PIC scaffold in <code>src/</code>. Production electrostatic runs use
+          structure-of-arrays (SoA) particle buffers with optional Numba parallel kernels.
+          Modules are designed for a future C++ port: explicit pushers, staggered Yee EM grids,
+          grid-node electrostatic grids, and prescribed external E/B fields with polar-transform geometry.
         </p>
         <div class="card-grid">
           <div class="card">
             <h3><span class="tag tag-class">Class</span> YeeGrid</h3>
-            <p>Staggered FDTD Maxwell solver with CIC deposit/gather.</p>
+            <p>Staggered FDTD Maxwell solver with scalar and batched CIC deposit/gather (WIP driver).</p>
           </div>
           <div class="card">
             <h3><span class="tag tag-class">Class</span> ElectrostaticGrid</h3>
-            <p>Poisson solve, cell-centered E, periodic/anode/reflecting BCs.</p>
+            <p>Grid-node Poisson solve, CIC deposit/gather, periodic/anode/reflecting BCs.</p>
           </div>
           <div class="card">
             <h3><span class="tag tag-class">Class</span> Pushers</h3>
-            <p>Boris, relativistic Boris, Vay, Higuera–Cary velocity updates.</p>
+            <p>Boris, relativistic Boris, Vay, Higuera–Cary; scalar and batch dispatch.</p>
           </div>
           <div class="card">
-            <h3><span class="tag tag-class">Class</span> ElectricFields</h3>
-            <p>Analytical and file-backed prescribed E(r, t) with polarization.</p>
+            <h3><span class="tag tag-module">Module</span> pic_kernels</h3>
+            <p>Numba parallel CIC deposit, E gather, B=0 kick, and periodic wrap.</p>
           </div>
         </div>
         <table>
@@ -85,13 +91,10 @@
           </thead>
           <tbody>
             <tr><td><code>Particle</code></td><td><code>src/Particle.py</code></td><td>Macro-particle state (r, v, q, m)</td></tr>
-            <tr><td><code>Pushers</code></td><td><code>src/Pushers.py</code></td><td>Explicit velocity integrators</td></tr>
-            <tr><td><code>YeeGrid</code></td><td><code>src/YeeGrid.py</code></td><td>EM fields on staggered Yee mesh</td></tr>
-            <tr><td><code>ElectrostaticGrid</code></td><td><code>src/ElectrostaticGrid.py</code></td><td>φ, E from ρ</td></tr>
-            <tr><td><code>ElectricFields</code></td><td><code>src/ElectricFields.py</code></td><td>Prescribed electric sources</td></tr>
-            <tr><td><code>MagneticFields</code></td><td><code>src/MagneticFields.py</code></td><td>Prescribed magnetic sources</td></tr>
-            <tr><td><code>field_frame</code></td><td><code>src/field_frame.py</code></td><td>Static wave frames &amp; polar transform</td></tr>
-            <tr><td><code>field_io</code></td><td><code>src/field_io.py</code></td><td>CSV/HDF5 load &amp; interpolation</td></tr>
+            <tr><td><code>Pushers</code></td><td><code>src/Pushers.py</code></td><td>Explicit velocity integrators (scalar + batch)</td></tr>
+            <tr><td><code>grids</code></td><td><code>src/grids/</code></td><td><code>ElectrostaticGrid</code>, <code>YeeGrid</code>, <code>pic_kernels</code>, <code>grid_common</code></td></tr>
+            <tr><td><code>fields</code></td><td><code>src/fields/</code></td><td><code>ElectricFields</code>, <code>MagneticFields</code>, <code>field_frame</code>, <code>field_io</code></td></tr>
+            <tr><td><code>pic_animation</code></td><td><code>src/pic_animation.py</code></td><td>HDF5 frame streaming and MP4 export</td></tr>
           </tbody>
         </table>
       </section>
@@ -101,13 +104,17 @@
         <h2>Getting Started</h2>
         <p class="lead">Run tests and serve this documentation from the repository root.</p>
         <div class="callout">
-          <strong>PYTHONPATH:</strong> Add <code>src/</code> when importing modules, or run unit tests which bootstrap the path automatically.
+          <strong>PYTHONPATH:</strong> Example drivers and unit tests prepend <code>src/</code> automatically.
+          For ad-hoc scripts, add <code>src/</code> to <code>sys.path</code> or set <code>PYTHONPATH=src</code>.
         </div>
         <pre><code># Activate venv (see README.md for NumPy/OpenBLAS setup)
 source .venv/bin/activate
 
 # Run tests
-PYTHONPATH=src python3 -m unittest discover -s tests -v
+python -m unittest discover -s tests -v
+
+# Run an electrostatic example (no animation)
+python examples/01_kr_rf_plasma.py --no-animate --steps 100
 
 # Serve documentation
 cd docs &amp;&amp; python3 -m http.server 8000
@@ -117,33 +124,42 @@ cd docs &amp;&amp; python3 -m http.server 8000
       <!-- DRIVER LOOP -->
       <section id="driver-loop">
         <h2>Typical Driver Loop</h2>
-        <p class="lead">One PIC timestep: deposit → solve fields → gather → push → move → boundaries.</p>
-        <div class="flow-diagram">for step in range(nsteps):
-    t = step * dt
+        <p class="lead">
+          One PIC timestep: deposit → solve fields → gather → push → drift → boundaries.
+          Live electrostatic examples in <code>examples/</code> use SoA arrays
+          (<code>pos_e</code>, <code>vel_e</code>, …) and optional Numba kernels via
+          <code>particle_backend="numba"</code>.
+        </p>
+        <div class="flow-diagram"># Batched electrostatic path (see examples/common.py)
+grid.zero_rho()
+grid.deposit_rho_cic_batch(pos_all, charges)   # Numba if periodic + numba backend
+grid.solve_fields()                            # FFT Poisson (periodic) or sparse solve
 
-    grid.zero_rho()                    # or zero_currents for EM
-    for p in particles:
-        x, y, z = p.get_position()
-        grid.deposit_rho_cic(x, y, z, p.get_charge())
+E_self = grid.gather_e_cic_batch(pos_e)        # (N, 3)
+E_total = E_self + efield.at_batch(pos_e, t)   # external field, batched when available
 
-    grid.solve_fields()                # ES: solve_fields()
-                                       # EM: step_fields(dt)
+# B=0 electrostatic kick (Numba in-place) or full Boris batch:
+electric_kick_b0(vel_e, E_total, q_e / m_e, dt)
+pos_e += vel_e * dt
+wrap_positions_periodic(pos_e, Lx, Ly, Lz)
 
-    for p in particles:
-        x, y, z = p.get_position()
-        E = grid.gather_e_cic(x, y, z) # + efield.at(pos, t) if external
-        B = grid.gather_b_cic(...)     # EM only; + bfield.at(...)
-        v = Pushers.vay(p.get_velocity(), E, B, p.get_charge(), p.get_mass(), dt)
-        p.set_velocity(v)
-        p.move(dt)
-        grid.reflect_particle(p)       # if reflecting BC</div>
+# Single-particle API (tests, prototyping):
+grid.deposit_rho_cic(x, y, z, q)
+E = grid.gather_e_cic(x, y, z) + efield.at(pos, t)
+v = Pushers.push_batch("boris", vel, E, B, q, m, dt)
+grid.reflect_particle(p)                       # reflecting / anode walls</div>
       </section>
 
       <!-- PARTICLE -->
       <section id="particle">
         <h2>Particle</h2>
         <p class="module-path">src/Particle.py</p>
-        <p>Macro-particle with position, velocity, charge, mass, and species kind. Velocity updates are handled externally by <code>Pushers</code>.</p>
+        <p>
+          Single macro-particle with position, velocity, charge, mass, and species kind.
+          Velocity updates are handled externally by <code>Pushers</code>.
+          Production drivers in <code>examples/</code> use SoA NumPy arrays instead of
+          <code>Particle</code> instances for performance.
+        </p>
 
         <div class="panel open" id="particle-init">
           <button class="panel-header" type="button">
@@ -218,10 +234,17 @@ cd docs &amp;&amp; python3 -m http.server 8000
             <div class="signature">Pushers.vay(vel, E, B, q, m, dt, c=1.0) -&gt; ndarray</div>
             <div class="signature">Pushers.higuera_cary(vel, E, B, q, m, dt, c=1.0) -&gt; ndarray</div>
             <div class="signature">Pushers.push(kind, vel, E, B, q, m, dt, c=1.0) -&gt; ndarray</div>
+            <div class="signature">Pushers.push_batch(kind, vel, E, B, q, m, dt, c=1.0) -&gt; ndarray</div>
+            <div class="signature">Pushers.boris_batch(vel, E, B, q, m, dt) -&gt; ndarray</div>
             <div class="signature">Pushers.available() -&gt; tuple[PusherKind, ...]</div>
-            <p class="returns">Returns updated velocity 3-vector. Relativistic pushers default to <code>c=1</code> (normalized units).</p>
-            <h4>Helper functions</h4>
+            <p class="returns">
+              Returns updated velocity array. Scalar pushers accept <code>(3,)</code> vectors;
+              <code>push_batch</code> accepts matching <code>(N, 3)</code> <code>vel</code>, <code>E</code>, and <code>B</code>.
+              Boris uses a vectorized kernel; other kinds fall back to row-wise scalar push until dedicated batch kernels are added.
+            </p>
+            <h4>Module-level helpers</h4>
             <ul>
+              <li><code>boris_push_batch(vel, E, B, q, m, dt)</code> — vectorized classical Boris</li>
               <li><code>lorentz_gamma_from_velocity(vel, c)</code></li>
               <li><code>velocity_to_proper_velocity(vel, c)</code></li>
               <li><code>proper_velocity_to_velocity(u, c)</code></li>
@@ -233,8 +256,12 @@ cd docs &amp;&amp; python3 -m http.server 8000
       <!-- YEE GRID -->
       <section id="yee-grid">
         <h2>YeeGrid</h2>
-        <p class="module-path">src/YeeGrid.py</p>
-        <p>Staggered Yee grid for full EM PIC. Field components live on faces/edges; guard cells support periodic, anode (PEC), or reflecting (PMC-style) boundaries.</p>
+        <p class="module-path">src/grids/YeeGrid.py</p>
+        <p>
+          Staggered Yee grid for full EM PIC. Field components live on faces/edges; guard cells support
+          periodic, anode (PEC), or reflecting (PMC-style) boundaries. Not yet wired to a live EM driver
+          in <code>examples/</code> — covered by <code>tests/test_yee_grid.py</code>.
+        </p>
 
         <div class="panel open" id="yee-init">
           <button class="panel-header" type="button">
@@ -242,8 +269,8 @@ cd docs &amp;&amp; python3 -m http.server 8000
             <span class="chevron">▶</span>
           </button>
           <div class="panel-body">
-            <div class="signature">YeeGrid(nx, ny, nz, dx=1, dy=1, dz=1, ng=1, boundary="periodic", c=1.0)</div>
-            <p>Allocates staggered <code>Ex, Ey, Ez, Bx, By, Bz, Jx, Jy, Jz, rho</code> with guard layers.</p>
+            <div class="signature">YeeGrid(nx, ny, nz, dx=1, dy=1, dz=1, ng=1, boundary="periodic", eps0=1, mu0=1, anode_potential=0)</div>
+            <p>Allocates staggered <code>Ex, Ey, Ez, Bx, By, Bz, Jx, Jy, Jz, rho</code> with guard layers. Property <code>c = 1/√(μ₀ε₀)</code>.</p>
             <table>
               <tr><th>boundary</th><th>Behavior</th></tr>
               <tr><td><code>periodic</code></td><td>Wrap fields in guard cells</td></tr>
@@ -277,9 +304,12 @@ cd docs &amp;&amp; python3 -m http.server 8000
           <div class="panel-body">
             <ul>
               <li><code>deposit_rho_cic(x, y, z, q)</code></li>
+              <li><code>deposit_rho_cic_batch(positions, charges)</code> — <code>(N, 3)</code> + <code>(N,)</code>; uses Numba when periodic and available</li>
               <li><code>deposit_j_cic(x, y, z, vx, vy, vz, q)</code></li>
               <li><code>gather_e_cic(x, y, z) -&gt; ndarray</code></li>
               <li><code>gather_b_cic(x, y, z) -&gt; ndarray</code></li>
+              <li><code>gather_e_cic_batch(positions) -&gt; (N, 3)</code></li>
+              <li><code>gather_b_cic_batch(positions) -&gt; (N, 3)</code></li>
               <li><code>position_in_domain(pos)</code> — wrap or clamp per BC</li>
               <li><code>reflect_particle(particle)</code> — specular reflection at walls</li>
             </ul>
@@ -290,8 +320,12 @@ cd docs &amp;&amp; python3 -m http.server 8000
       <!-- ELECTROSTATIC GRID -->
       <section id="electrostatic-grid">
         <h2>ElectrostaticGrid</h2>
-        <p class="module-path">src/ElectrostaticGrid.py</p>
-        <p>Cell-centered electrostatic grid: deposit ρ, solve Poisson for φ, compute E. Supports FFT (periodic) or sparse direct solve (anode/reflecting).</p>
+        <p class="module-path">src/grids/ElectrostaticGrid.py</p>
+        <p>
+          Grid-node electrostatic PIC grid: deposit ρ at vertices, solve Poisson for φ, compute E.
+          Periodic BC uses FFT; anode (Dirichlet) and reflecting (Neumann + pinned φ) use sparse direct solve.
+          CIC deposit/gather at integer grid nodes with offset <code>(0, 0, 0)</code>.
+        </p>
 
         <div class="panel open" id="es-init">
           <button class="panel-header" type="button">
@@ -299,8 +333,8 @@ cd docs &amp;&amp; python3 -m http.server 8000
             <span class="chevron">▶</span>
           </button>
           <div class="panel-body">
-            <div class="signature">ElectrostaticGrid(nx, ny, nz, dx=1, dy=1, dz=1, ng=1, boundary="periodic", eps0=1, anode_potential=0)</div>
-            <p>Fields: <code>rho, phi, Ex, Ey, Ez</code> on cell-centered mesh with guards.</p>
+            <div class="signature">ElectrostaticGrid(nx, ny, nz, dx=1, dy=1, dz=1, ng=1, boundary="periodic", eps0=1, anode_potential=0, particle_backend="numba")</div>
+            <p>Fields: <code>rho, phi, Ex, Ey, Ez</code> on grid nodes with guards. <code>particle_backend</code> is <code>"numba"</code> or <code>"numpy"</code> (Numba used for periodic CIC when available).</p>
           </div>
         </div>
 
@@ -311,8 +345,8 @@ cd docs &amp;&amp; python3 -m http.server 8000
           </button>
           <div class="panel-body">
             <ul>
-              <li><code>solve_poisson()</code> — φ from ρ</li>
-              <li><code>compute_e_field()</code> — E from −∇φ</li>
+              <li><code>solve_poisson()</code> — φ from ρ (FFT if periodic)</li>
+              <li><code>compute_e_field()</code> — E from −∇φ (spectral gradient if periodic)</li>
               <li><code>solve_fields()</code> — both steps</li>
               <li><code>zero_rho()</code> / <code>zero_fields()</code></li>
             </ul>
@@ -327,9 +361,13 @@ cd docs &amp;&amp; python3 -m http.server 8000
           <div class="panel-body">
             <ul>
               <li><code>deposit_rho_cic(x, y, z, q)</code></li>
+              <li><code>deposit_rho_cic_batch(positions, charges, in_place=False)</code></li>
               <li><code>gather_e_cic(x, y, z) -&gt; ndarray</code></li>
-              <li><code>gather_fields(x, y, z) -&gt; (Ex, Ey, Ez)</code></li>
+              <li><code>gather_e_cic_batch(positions, in_place=False) -&gt; (N, 3)</code></li>
+              <li><code>gather_fields(x, y, z, B=None) -&gt; (E, B)</code> — B defaults to zero</li>
+              <li><code>position_in_domain_batch(positions, in_place=False)</code></li>
               <li><code>reflect_particle(particle)</code></li>
+              <li><code>particle_backend</code> property — active backend after Numba availability check</li>
             </ul>
           </div>
         </div>
@@ -338,7 +376,7 @@ cd docs &amp;&amp; python3 -m http.server 8000
       <!-- ELECTRIC FIELDS -->
       <section id="electric-fields">
         <h2>ElectricFields</h2>
-        <p class="module-path">src/ElectricFields.py</p>
+        <p class="module-path">src/fields/ElectricFields.py</p>
         <p>Prescribed spacetime-dependent E(r, t). Wave sources are authored in a <strong>fixed local frame</strong> (+z propagation). Spatial rotation into the PIC grid uses <code>ElectricFields.transform</code> only — no time-dependent frame rotation. Shares wave geometry helpers with <code>MagneticFields</code> via <code>field_frame</code>.</p>
 
         <div class="panel open" id="ef-factories">
@@ -381,8 +419,9 @@ cd docs &amp;&amp; python3 -m http.server 8000
           </button>
           <div class="panel-body">
             <div class="signature">at(pos, t=0.0) -&gt; ndarray</div>
+            <div class="signature">at_batch(positions, t=0.0) -&gt; (N, 3)</div>
             <div class="signature">on_grid(x, y, z, t=0.0) -&gt; (Ex, Ey, Ez)</div>
-            <p>Combine sources with <code>+</code> (returns <code>ElectricFieldsSum</code>). Works with <code>PolarTransformedField</code> as well.</p>
+            <p>Combine sources with <code>+</code> (returns <code>ElectricFieldsSum</code>, which also implements <code>at_batch</code>). Works with <code>PolarTransformedField</code> as well.</p>
           </div>
         </div>
       </section>
@@ -390,7 +429,7 @@ cd docs &amp;&amp; python3 -m http.server 8000
       <!-- FIELD FRAME -->
       <section id="field-frame">
         <h2>WaveFrame &amp; Polar Transform</h2>
-        <p class="module-path">src/field_frame.py</p>
+        <p class="module-path">src/fields/field_frame.py</p>
         <p>Static local-to-lab geometry shared by electric and magnetic prescribed fields. The frame does <em>not</em> rotate in time; temporal behavior is in wave phase and elliptical parameters.</p>
 
         <div class="panel" id="wf-shared">
@@ -437,7 +476,7 @@ cd docs &amp;&amp; python3 -m http.server 8000
             <p>Evaluates <code>source</code> at local coordinates and rotates the vector into the lab frame (works for E or B):</p>
             <pre><code>r_local = Rᵀ (r_lab − origin)
 F_lab   = R F_local(r_local, t)</code></pre>
-            <p>Attributes: <code>.source</code>, <code>.frame</code>, <code>.at(pos, t)</code>.</p>
+            <p>Attributes: <code>.source</code>, <code>.frame</code>, <code>.at(pos, t)</code>, <code>.at_batch(positions, t)</code>.</p>
             <p>Superposition via <code>+</code> dispatches to <code>ElectricFieldsSum</code> or <code>MagneticFieldsSum</code> based on the operand type.</p>
           </div>
         </div>
@@ -446,7 +485,7 @@ F_lab   = R F_local(r_local, t)</code></pre>
       <!-- MAGNETIC FIELDS -->
       <section id="magnetic-fields">
         <h2>MagneticFields</h2>
-        <p class="module-path">src/MagneticFields.py</p>
+        <p class="module-path">src/fields/MagneticFields.py</p>
         <p>Prescribed B(r, t) with the same local-frame + polar-transform design as <code>ElectricFields</code>. Wave sources propagate along local +z; rotate into the PIC grid with <code>MagneticFields.transform</code>. No time-dependent frame rotation.</p>
 
         <div class="panel open" id="mf-factories">
@@ -494,7 +533,7 @@ F_lab   = R F_local(r_local, t)</code></pre>
       <!-- FIELD IO -->
       <section id="field-io">
         <h2>field_io</h2>
-        <p class="module-path">src/field_io.py</p>
+        <p class="module-path">src/fields/field_io.py</p>
         <p>Shared CSV/HDF5 loading and spacetime interpolation for prescribed fields.</p>
 
         <div class="panel open" id="fio-dataset">
@@ -527,7 +566,89 @@ F_lab   = R F_local(r_local, t)</code></pre>
           </button>
           <div class="panel-body">
             <div class="signature">FieldInterpolator(dataset).at(pos, t=0.0) -&gt; ndarray</div>
+            <div class="signature">FieldInterpolator(dataset).at_batch(positions, t=0.0) -&gt; (N, 3)</div>
             <p>Uses <code>RegularGridInterpolator</code> (structured) or <code>LinearNDInterpolator</code> (unstructured).</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- PIC KERNELS -->
+      <section id="pic-kernels">
+        <h2>pic_kernels</h2>
+        <p class="module-path">src/grids/pic_kernels.py</p>
+        <p>
+          Numba <code>@njit(parallel=True)</code> kernels used by <code>ElectrostaticGrid</code> and
+          <code>YeeGrid</code> when <code>particle_backend="numba"</code> and boundary is periodic.
+          Falls back to NumPy vectorized paths if Numba is unavailable.
+        </p>
+
+        <div class="panel open" id="kernels-api">
+          <button class="panel-header" type="button">
+            <span class="tag tag-fn">functions</span> Public kernels
+            <span class="chevron">▶</span>
+          </button>
+          <div class="panel-body">
+            <table>
+              <tr><th>Function</th><th>Description</th></tr>
+              <tr><td><code>deposit_cic_periodic(rho, positions, values, dx, dy, dz, nx, ny, nz, ng, partial)</code></td><td>Thread-local CIC scatter-add into flattened ρ</td></tr>
+              <tr><td><code>gather_e_cic_periodic(Ex, Ey, Ez, positions, …) -&gt; (N, 3)</code></td><td>Trilinear E gather at grid nodes</td></tr>
+              <tr><td><code>electric_kick_b0(vel, efield, q_over_m, dt)</code></td><td>In-place <code>v += (q/m) dt E</code> (B = 0)</td></tr>
+              <tr><td><code>wrap_positions_periodic(pos, lx, ly, lz)</code></td><td>In-place modulo wrap</td></tr>
+              <tr><td><code>warmup_kernels()</code></td><td>JIT-compile on dummy data</td></tr>
+              <tr><td><code>get_num_threads()</code> / <code>HAS_NUMBA</code></td><td>Runtime thread count and availability flag</td></tr>
+            </table>
+            <p>Example drivers set <code>OPENBLAS_NUM_THREADS=1</code> when using Numba to avoid CPU oversubscription.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- EXAMPLE DRIVERS -->
+      <section id="example-drivers">
+        <h2>examples/ Drivers</h2>
+        <p class="module-path">examples/common.py</p>
+        <p class="lead">
+          Production electrostatic PIC simulations live under <code>examples/</code>.
+          <code>ElectrostaticPICSimulation</code> holds SoA particle state, drives the leapfrog loop,
+          and streams frames via <code>pic_animation.FrameStreamWriter</code>.
+        </p>
+
+        <div class="panel open" id="drivers-scripts">
+          <button class="panel-header" type="button">
+            <span class="tag tag-module">scripts</span> Example entry points
+            <span class="chevron">▶</span>
+          </button>
+          <div class="panel-body">
+            <table>
+              <tr><th>Script</th><th>Scenario</th></tr>
+              <tr><td><code>01_kr_rf_plasma.py</code></td><td>Uniform 10 GHz RF on Kr⁺ / e⁻ plasma</td></tr>
+              <tr><td><code>02_hydrogen_thermal.py</code></td><td>Thermal H⁺ / e⁻, self-fields only</td></tr>
+              <tr><td><code>03_propagating_plane_wave.py</code></td><td>800 nm plane wave on Kr⁺ / e⁻</td></tr>
+              <tr><td><code>04_gaussian_laser_pulse.py</code></td><td>Gaussian-enveloped laser pulse</td></tr>
+              <tr><td><code>05_high_density_dc_bias.py</code></td><td>High-density plasma with DC bias</td></tr>
+              <tr><td><code>06_elliptical_rf.py</code></td><td>Elliptically polarized RF drive</td></tr>
+            </table>
+            <p><code>3DPIC.py</code> at the repo root delegates to <code>01_kr_rf_plasma.py</code>.</p>
+          </div>
+        </div>
+
+        <div class="panel" id="drivers-cli">
+          <button class="panel-header" type="button">
+            <span class="tag tag-fn">CLI</span> Shared flags
+            <span class="chevron">▶</span>
+          </button>
+          <div class="panel-body">
+            <pre><code>python examples/01_kr_rf_plasma.py \
+  --steps 1000 \
+  --seed 42 \
+  --backend numba \
+  --threads 4 \
+  --no-animate \
+  --frame-subsample 2000</code></pre>
+            <ul>
+              <li><code>--backend {numba,numpy}</code> — Numba parallel kernels vs NumPy reference</li>
+              <li><code>--threads N</code> — Numba thread count (<code>NUMBA_NUM_THREADS</code>)</li>
+              <li><code>--no-animate</code> — skip HDF5 frame stream and MP4 export</li>
+            </ul>
           </div>
         </div>
       </section>
@@ -535,14 +656,18 @@ F_lab   = R F_local(r_local, t)</code></pre>
       <!-- EXAMPLES -->
       <section id="example-es">
         <h2>Example: Electrostatic Particle Push</h2>
-        <p class="lead">Uniform background E plus self-consistent grid field on an electrostatic grid.</p>
+        <p class="lead">
+          Single-particle API for prototyping. For full simulations use
+          <code>examples/01_kr_rf_plasma.py</code> or <code>ElectrostaticPICSimulation</code> in
+          <code>examples/common.py</code> (batched SoA + Numba).
+        </p>
         <pre><code>import sys
 sys.path.insert(0, "src")
 
 import numpy as np
 from Particle import Particle
-from ElectrostaticGrid import ElectrostaticGrid
-from ElectricFields import ElectricFields
+from grids import ElectrostaticGrid
+from fields import ElectricFields
 from Pushers import Pushers
 
 grid = ElectrostaticGrid(32, 32, 32, dx=0.1, boundary="periodic")
@@ -560,18 +685,21 @@ for step in range(100):
     grid.solve_fields()
 
     E = grid.gather_e_cic(*pos) + efield.at(pos, t)
-    v = Pushers.boris(p.get_velocity(), E, np.zeros(3), p.get_charge(), p.get_mass(), dt)
+    B = np.zeros(3)
+    v = Pushers.push("boris", p.get_velocity(), E, B, p.get_charge(), p.get_mass(), dt)
     p.set_velocity(v)
-    p.move(dt)</code></pre>
+    p.move(dt)
+
+# Batched equivalent (N particles):
+# vel = Pushers.push_batch("boris", vel, E_batch, B_batch, q, m, dt)</code></pre>
       </section>
 
       <section id="example-em">
         <h2>Example: Electromagnetic Push</h2>
         <p class="lead">Yee grid with an oblique guide field via polar transform.</p>
         <pre><code>import numpy as np
-from YeeGrid import YeeGrid
-from MagneticFields import MagneticFields
-from field_frame import WaveFrame
+from grids import YeeGrid
+from fields import MagneticFields, WaveFrame
 from Pushers import Pushers
 
 grid = YeeGrid(64, 64, 64, dx=1e-3, boundary="periodic")
@@ -584,15 +712,15 @@ dt = grid.cfl_dt_limit()
 # ... deposit, step_fields(dt), then per particle:
 E = grid.gather_e_cic(x, y, z)
 B = grid.gather_b_cic(x, y, z) + bfield.at(p.get_position(), t)
-v = Pushers.boris_relativistic(p.get_velocity(), E, B, p.get_charge(), p.get_mass(), dt)</code></pre>
+v = Pushers.push("boris_relativistic", p.get_velocity(), E, B,
+                 p.get_charge(), p.get_mass(), dt)</code></pre>
       </section>
 
       <section id="example-laser">
         <h2>Example: Oblique Laser via Polar Transform</h2>
         <p class="lead">Author a wave in local coordinates, rotate into the PIC cube with a static frame.</p>
         <pre><code>import numpy as np
-from ElectricFields import ElectricFields
-from field_frame import WaveFrame
+from fields import ElectricFields, WaveFrame
 
 k0 = 2 * np.pi / 800e-9
 omega = 2 * np.pi * 3e14
@@ -620,8 +748,7 @@ E_ext = laser.at(pos, t=1e-15)</code></pre>
         <h2>Example: Oblique Gaussian Laser Pulse</h2>
         <p class="lead">Author a finite Gaussian pulse in local coordinates (envelope along local axes, propagation along local +z), then rotate into the PIC cube with a static frame.</p>
         <pre><code>import numpy as np
-from ElectricFields import ElectricFields
-from field_frame import WaveFrame
+from fields import ElectricFields, WaveFrame
 
 k0 = 2 * np.pi / 800e-9
 omega = 2 * np.pi * 3e14
@@ -654,8 +781,7 @@ E_ext = pulse.at(pos, t=1e-15)</code></pre>
         <h2>Example: Oblique Mirror / Solenoid B</h2>
         <p class="lead">Mirror-field profile authored along local +z, rotated into the lab frame.</p>
         <pre><code>import numpy as np
-from MagneticFields import MagneticFields
-from field_frame import WaveFrame
+from fields import MagneticFields, WaveFrame
 
 local = MagneticFields.mirror_local(B0=0.5, scale_length=2.0)
 frame = WaveFrame.from_spherical(theta=np.deg2rad(15), phi=np.deg2rad(30))
@@ -669,9 +795,7 @@ B_ext = bfield.at(pos, t=0.0)</code></pre>
         <h2>Example: Paired Oblique E + B Wave</h2>
         <p class="lead">For vacuum EM waves, B is related to E by <code>B = (k̂ × E) / ω</code> (SI units). Build E from the transform API, then set B amplitude and pol angle accordingly.</p>
         <pre><code>import numpy as np
-from ElectricFields import ElectricFields
-from MagneticFields import MagneticFields
-from field_frame import WaveFrame
+from fields import ElectricFields, MagneticFields, WaveFrame
 
 omega = 2 * np.pi * 3e14
 k0 = omega / 3e8
@@ -697,9 +821,9 @@ B_ext = bfield.at(pos, t)</code></pre>
 
       <section id="example-superposition">
         <h2>Example: Field Superposition</h2>
-        <p class="lead">Combine bias, file-backed, and transformed sources with <code>+</code>.</p>
-        <pre><code>from ElectricFields import ElectricFields
-from field_frame import WaveFrame
+        <p class="lead">Combine bias, file-backed, and transformed sources with <code>+</code>. Use <code>at_batch</code> when driving many particles.</p>
+        <pre><code>from fields import ElectricFields, WaveFrame
+import numpy as np
 
 bias = ElectricFields.uniform([0.0, 0.0, 1e4])
 file_field = ElectricFields.from_csv("data/electric_uniform_z.csv")
@@ -711,7 +835,7 @@ frame = WaveFrame.from_spherical(theta=0.2, phi=0.0)
 pulse = ElectricFields.transform(local_pulse, frame)
 
 efield = bias + file_field + pulse
-E_total = efield.at(particle.get_position(), t=step * dt)</code></pre>
+E_total = efield.at_batch(positions, t=step * dt)   # (N, 3)</code></pre>
       </section>
 
     </main>
