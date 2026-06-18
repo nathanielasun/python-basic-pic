@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from Particle import Particle
 
 BoundaryKind = Literal["periodic", "anode", "reflecting"]
+ParticleBackend = Literal["numpy", "numba"]
 
 
 def _shape_cell(nx: int, ny: int, nz: int, ng: int) -> tuple[int, int, int]:
@@ -52,6 +53,7 @@ class ElectrostaticGrid:
         boundary: BoundaryKind = "periodic",
         eps0: float = 1.0,
         anode_potential: float = 0.0,
+        particle_backend: ParticleBackend = "numba",
     ) -> None:
         if nx < 1 or ny < 1 or nz < 1:
             raise ValueError("nx, ny, nz must be positive")
@@ -70,6 +72,7 @@ class ElectrostaticGrid:
         self.boundary = boundary.lower()
         self.eps0 = eps0
         self.anode_potential = anode_potential
+        self._particle_backend = self._resolve_particle_backend(particle_backend)
 
         self.Lx = nx * dx
         self.Ly = ny * dy
@@ -105,6 +108,24 @@ class ElectrostaticGrid:
     @property
     def domain_lengths(self) -> tuple[float, float, float]:
         return (self.Lx, self.Ly, self.Lz)
+
+    @property
+    def particle_backend(self) -> ParticleBackend:
+        return self._particle_backend
+
+    @staticmethod
+    def _resolve_particle_backend(requested: ParticleBackend) -> ParticleBackend:
+        if requested != "numba":
+            return "numpy"
+        try:
+            from pic_kernels import HAS_NUMBA, warmup_kernels
+
+            if not HAS_NUMBA:
+                return "numpy"
+            warmup_kernels()
+            return "numba"
+        except ImportError:
+            return "numpy"
 
     def zero_fields(self) -> None:
         for arr in (self.rho, self.phi, self.Ex, self.Ey, self.Ez):
@@ -239,6 +260,17 @@ class ElectrostaticGrid:
         if self.boundary == "periodic":
             return self.wrap_position(pos, self.domain_lengths)
 
+        return self.clamp_position(pos, self.domain_lengths, (self.dx, self.dy, self.dz))
+
+    def position_in_domain_batch(self, positions: NDArray[np.floating]) -> NDArray[np.float64]:
+        """Batch version of :meth:`position_in_domain` for ``(N, 3)`` positions."""
+        pos = np.asarray(positions, dtype=np.float64).copy()
+        if pos.ndim != 2 or pos.shape[1] != 3:
+            raise ValueError("positions must have shape (N, 3)")
+        if self.boundary == "periodic":
+            lengths = np.array(self.domain_lengths, dtype=np.float64)
+            pos %= lengths
+            return pos
         return self.clamp_position(pos, self.domain_lengths, (self.dx, self.dy, self.dz))
 
     @staticmethod
@@ -522,6 +554,41 @@ class ElectrostaticGrid:
             (0.0, 0.0, 0.0),
         )
 
+    def deposit_rho_cic_batch(
+        self,
+        positions: NDArray[np.floating],
+        charges: NDArray[np.floating],
+    ) -> None:
+        """Vectorized CIC charge deposition for ``(N, 3)`` positions and ``(N,)`` charges."""
+        pos = self.position_in_domain_batch(positions)
+        charges_arr = np.asarray(charges, dtype=np.float64)
+        if charges_arr.ndim != 1 or charges_arr.shape[0] != pos.shape[0]:
+            raise ValueError("charges must have shape (N,) matching positions")
+        cell_volume = self.dx * self.dy * self.dz
+        values = charges_arr / cell_volume
+        if self._particle_backend == "numba" and self.boundary == "periodic":
+            from pic_kernels import deposit_cic_periodic
+
+            deposit_cic_periodic(
+                self.rho,
+                pos,
+                values,
+                self.dx,
+                self.dy,
+                self.dz,
+                self.nx,
+                self.ny,
+                self.nz,
+                self.ng,
+            )
+        else:
+            self._deposit_scalar_batch(
+                self.rho,
+                pos,
+                values,
+                (0.0, 0.0, 0.0),
+            )
+
     def gather_e_cic(self, x: float, y: float, z: float) -> NDArray[np.float64]:
         """Trilinear interpolation of E at a particle position."""
         pos = self.position_in_domain(np.array([x, y, z]))
@@ -529,6 +596,30 @@ class ElectrostaticGrid:
         ey = self._gather_scalar(self.Ey, pos, (0.0, 0.0, 0.0))
         ez = self._gather_scalar(self.Ez, pos, (0.0, 0.0, 0.0))
         return np.array([ex, ey, ez], dtype=np.float64)
+
+    def gather_e_cic_batch(self, positions: NDArray[np.floating]) -> NDArray[np.float64]:
+        """Trilinear interpolation of E for ``(N, 3)`` particle positions; returns ``(N, 3)``."""
+        pos = self.position_in_domain_batch(positions)
+        if self._particle_backend == "numba" and self.boundary == "periodic":
+            from pic_kernels import gather_e_cic_periodic
+
+            return gather_e_cic_periodic(
+                self.Ex,
+                self.Ey,
+                self.Ez,
+                pos,
+                self.dx,
+                self.dy,
+                self.dz,
+                self.nx,
+                self.ny,
+                self.nz,
+                self.ng,
+            )
+        ex = self._gather_scalar_batch(self.Ex, pos, (0.0, 0.0, 0.0))
+        ey = self._gather_scalar_batch(self.Ey, pos, (0.0, 0.0, 0.0))
+        ez = self._gather_scalar_batch(self.Ez, pos, (0.0, 0.0, 0.0))
+        return np.column_stack([ex, ey, ez])
 
     def gather_fields(
         self,
@@ -557,11 +648,32 @@ class ElectrostaticGrid:
         f = g - i0
         return g, i0, f
 
+    def _grid_coords_batch(
+        self,
+        positions: NDArray[np.floating],
+        offsets: tuple[float, float, float],
+    ) -> tuple[NDArray[np.float64], NDArray[np.int64], NDArray[np.float64]]:
+        pos = np.asarray(positions, dtype=np.float64)
+        if pos.ndim == 1:
+            return self._grid_coords(pos, offsets)
+        ds = np.array([self.dx, self.dy, self.dz])
+        offs = np.array(offsets)
+        g = pos / ds - offs
+        i0 = np.floor(g).astype(np.int64)
+        f = g - i0
+        return g, i0, f
+
     def _logical_index(self, logical: int, axis: int) -> int:
         n_cells = (self.nx, self.ny, self.nz)[axis]
         if self.boundary == "periodic":
             return int(logical % n_cells)
         return int(np.clip(logical, 0, n_cells - 1))
+
+    def _logical_index_batch(self, logical: NDArray[np.int64], axis: int) -> NDArray[np.int64]:
+        n_cells = (self.nx, self.ny, self.nz)[axis]
+        if self.boundary == "periodic":
+            return logical % n_cells
+        return np.clip(logical, 0, n_cells - 1)
 
     def _deposit_scalar(
         self,
@@ -583,6 +695,33 @@ class ElectrostaticGrid:
                     jj = self._logical_index(i0[1] + dj, 1) + ng
                     kk = self._logical_index(i0[2] + dk, 2) + ng
                     field[ii, jj, kk] += value * wi * wj * wk
+
+    def _deposit_scalar_batch(
+        self,
+        field: NDArray[np.floating],
+        positions: NDArray[np.floating],
+        values: NDArray[np.floating],
+        offsets: tuple[float, float, float],
+    ) -> None:
+        """Vectorized CIC scatter-add for many particles."""
+        _, i0, f = self._grid_coords_batch(positions, offsets)
+        ng = self.ng
+        ny_tot = field.shape[1]
+        nz_tot = field.shape[2]
+        flat = field.ravel()
+
+        for di in (0, 1):
+            wi = (1.0 - f[:, 0]) if di == 0 else f[:, 0]
+            ii = self._logical_index_batch(i0[:, 0] + di, 0) + ng
+            for dj in (0, 1):
+                wj = (1.0 - f[:, 1]) if dj == 0 else f[:, 1]
+                jj = self._logical_index_batch(i0[:, 1] + dj, 1) + ng
+                for dk in (0, 1):
+                    wk = (1.0 - f[:, 2]) if dk == 0 else f[:, 2]
+                    kk = self._logical_index_batch(i0[:, 2] + dk, 2) + ng
+                    weight = values * wi * wj * wk
+                    flat_idx = ii * ny_tot * nz_tot + jj * nz_tot + kk
+                    np.add.at(flat, flat_idx, weight)
 
     def _gather_scalar(
         self,
@@ -606,3 +745,27 @@ class ElectrostaticGrid:
                     value += field[ii, jj, kk] * wi * wj * wk
 
         return float(value)
+
+    def _gather_scalar_batch(
+        self,
+        field: NDArray[np.floating],
+        positions: NDArray[np.floating],
+        offsets: tuple[float, float, float],
+    ) -> NDArray[np.float64]:
+        """Vectorized trilinear gather for many particles."""
+        _, i0, f = self._grid_coords_batch(positions, offsets)
+        ng = self.ng
+        values = np.zeros(positions.shape[0], dtype=np.float64)
+
+        for di in (0, 1):
+            wi = (1.0 - f[:, 0]) if di == 0 else f[:, 0]
+            ii = self._logical_index_batch(i0[:, 0] + di, 0) + ng
+            for dj in (0, 1):
+                wj = (1.0 - f[:, 1]) if dj == 0 else f[:, 1]
+                jj = self._logical_index_batch(i0[:, 1] + dj, 1) + ng
+                for dk in (0, 1):
+                    wk = (1.0 - f[:, 2]) if dk == 0 else f[:, 2]
+                    kk = self._logical_index_batch(i0[:, 2] + dk, 2) + ng
+                    values += field[ii, jj, kk] * wi * wj * wk
+
+        return values
