@@ -15,7 +15,7 @@ for path in (_EXAMPLES, _SRC):
         sys.path.insert(0, str(path))
 
 from common import E_CHARGE, M_E
-from ElectricFields import ElectricFields
+from fields import ElectricFields
 
 
 def _leapfrog_uniform(pos0: float, vel0: np.ndarray, e0: float, dt: float, n_steps: int) -> float:

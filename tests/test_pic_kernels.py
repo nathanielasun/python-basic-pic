@@ -12,10 +12,10 @@ _SRC = Path(__file__).resolve().parent.parent / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from ElectrostaticGrid import ElectrostaticGrid
+from grids import ElectrostaticGrid
 
 try:
-    from pic_kernels import (
+    from grids.pic_kernels import (
         HAS_NUMBA,
         deposit_cic_periodic,
         electric_kick_b0,
