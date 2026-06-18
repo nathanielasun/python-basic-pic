@@ -2,16 +2,18 @@
 Author: Nathaniel Sun
 Date: 2026-06-17
 Description:
-    3D cell-centered grid for electrostatic PIC.
+    3D grid-node (vertex-staggered) electrostatic PIC grid with CIC deposit/gather
+    at integer grid nodes i·Δx (offset ``(0,0,0)``).
 
     Fields:
-      - rho, phi: cell-centered (nx, ny, nz interior + ng guard cells)
-      - Ex, Ey, Ez: cell-centered, from E = -grad(phi)
+      - rho, phi: grid nodes (nx, ny, nz interior + ng guard cells)
+      - Ex, Ey, Ez: grid nodes, from E = -grad(phi)
 
     Poisson equation:
       - periodic: FFT
       - anode: Dirichlet phi = anode_potential on all faces (sparse direct solve)
-      - reflecting: Neumann dphi/dn = 0 on all faces (sparse direct solve, phi pinned)
+      - reflecting: Neumann dphi/dn = 0 on all faces (sparse direct solve, phi pinned;
+        interior rho must have zero mean for a unique solution)
 
     Physical domain: x in [0, Lx), y in [0, Ly), z in [0, Lz) with L = n * d.
 """
@@ -25,7 +27,7 @@ import scipy.sparse
 import scipy.sparse.linalg
 from numpy.typing import NDArray
 
-from YeeGrid import _periodic_field
+from grid_common import periodic_field as _periodic_field
 
 if TYPE_CHECKING:
     from Particle import Particle
@@ -39,7 +41,7 @@ def _shape_cell(nx: int, ny: int, nz: int, ng: int) -> tuple[int, int, int]:
 
 
 class ElectrostaticGrid:
-    """Cell-centered electrostatic grid with periodic, anode, or reflecting walls."""
+    """Grid-node electrostatic PIC grid with periodic, anode, or reflecting walls."""
 
     def __init__(
         self,
@@ -86,8 +88,12 @@ class ElectrostaticGrid:
         self.Ez = np.zeros(shape)
 
         self._k2: NDArray[np.float64] | None = None
+        self._kx: NDArray[np.float64] | None = None
+        self._ky: NDArray[np.float64] | None = None
+        self._kz: NDArray[np.float64] | None = None
         self._wall_solve: Callable[[NDArray[np.float64]], NDArray[np.float64]] | None = None
         self._wall_boundary_rhs: NDArray[np.float64] | None = None
+        self._deposit_partial: NDArray[np.float64] | None = None
 
         if boundary == "anode":
             self._init_anode_solver()
@@ -95,6 +101,18 @@ class ElectrostaticGrid:
             self._init_reflecting_solver()
 
         self.apply_boundaries()
+        self._init_deposit_partial()
+
+    def _init_deposit_partial(self) -> None:
+        if self._particle_backend != "numba" or self.boundary != "periodic":
+            return
+        try:
+            from pic_kernels import get_num_threads
+
+            n_threads = get_num_threads()
+            self._deposit_partial = np.zeros((n_threads, self.rho.size), dtype=np.float64)
+        except ImportError:
+            pass
 
     @property
     def interior_slice(self) -> tuple[slice, slice, slice]:
@@ -262,9 +280,19 @@ class ElectrostaticGrid:
 
         return self.clamp_position(pos, self.domain_lengths, (self.dx, self.dy, self.dz))
 
-    def position_in_domain_batch(self, positions: NDArray[np.floating]) -> NDArray[np.float64]:
+    def position_in_domain_batch(
+        self,
+        positions: NDArray[np.floating],
+        *,
+        in_place: bool = False,
+    ) -> NDArray[np.float64]:
         """Batch version of :meth:`position_in_domain` for ``(N, 3)`` positions."""
-        pos = np.asarray(positions, dtype=np.float64).copy()
+        if in_place:
+            pos = np.asarray(positions, dtype=np.float64)
+            if not pos.flags.c_contiguous:
+                raise ValueError("in_place requires a contiguous float64 array")
+        else:
+            pos = np.asarray(positions, dtype=np.float64).copy()
         if pos.ndim != 2 or pos.shape[1] != 3:
             raise ValueError("positions must have shape (N, 3)")
         if self.boundary == "periodic":
@@ -466,13 +494,20 @@ class ElectrostaticGrid:
         solve = scipy.sparse.linalg.factorized(matrix)
         return boundary_rhs, solve
 
+    def _k_wave_grids(self) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
+        if self._kx is not None and self._ky is not None and self._kz is not None:
+            return self._kx, self._ky, self._kz
+
+        self._kx = 2.0 * np.pi * np.fft.fftfreq(self.nx, self.dx)
+        self._ky = 2.0 * np.pi * np.fft.fftfreq(self.ny, self.dy)
+        self._kz = 2.0 * np.pi * np.fft.fftfreq(self.nz, self.dz)
+        return self._kx, self._ky, self._kz
+
     def _k2_grid(self) -> NDArray[np.float64]:
         if self._k2 is not None:
             return self._k2
 
-        kx = 2.0 * np.pi * np.fft.fftfreq(self.nx, self.dx)
-        ky = 2.0 * np.pi * np.fft.fftfreq(self.ny, self.dy)
-        kz = 2.0 * np.pi * np.fft.fftfreq(self.nz, self.dz)
+        kx, ky, kz = self._k_wave_grids()
         self._k2 = (
             kx[:, np.newaxis, np.newaxis] ** 2
             + ky[np.newaxis, :, np.newaxis] ** 2
@@ -507,7 +542,10 @@ class ElectrostaticGrid:
             raise RuntimeError("wall Poisson solver is not initialized")
 
         ix, iy, iz = self.interior_slice
-        rho_int = self.rho[ix, iy, iz]
+        rho_int = self.rho[ix, iy, iz].copy()
+        if self.boundary == "reflecting":
+            rho_int -= np.mean(rho_int)
+            self.rho[ix, iy, iz] = rho_int
         rhs = (-rho_int.ravel() / self.eps0) + self._wall_boundary_rhs
         phi_int = self._wall_solve(rhs).reshape(self.nx, self.ny, self.nz)
         self.phi[ix, iy, iz] = phi_int
@@ -522,20 +560,19 @@ class ElectrostaticGrid:
             self._apply_reflecting_boundaries()
 
     def _compute_e_field_periodic(self) -> None:
-        """Compute E = -grad(phi) with centered differences (periodic interior)."""
+        """Compute E = -grad(phi) with a spectral gradient matching the FFT Poisson solve."""
         ix, iy, iz = self.interior_slice
         phi_int = self.phi[ix, iy, iz]
+        phi_k = np.fft.fftn(phi_int)
+        kx, ky, kz = self._k_wave_grids()
 
-        self.Ex[ix, iy, iz] = -(
-            np.roll(phi_int, -1, axis=0) - np.roll(phi_int, 1, axis=0)
-        ) / (2.0 * self.dx)
-        self.Ey[ix, iy, iz] = -(
-            np.roll(phi_int, -1, axis=1) - np.roll(phi_int, 1, axis=1)
-        ) / (2.0 * self.dy)
-        self.Ez[ix, iy, iz] = -(
-            np.roll(phi_int, -1, axis=2) - np.roll(phi_int, 1, axis=2)
-        ) / (2.0 * self.dz)
+        ex_int = np.real(np.fft.ifftn(-1j * kx[:, np.newaxis, np.newaxis] * phi_k))
+        ey_int = np.real(np.fft.ifftn(-1j * ky[np.newaxis, :, np.newaxis] * phi_k))
+        ez_int = np.real(np.fft.ifftn(-1j * kz[np.newaxis, np.newaxis, :] * phi_k))
 
+        self.Ex[ix, iy, iz] = ex_int
+        self.Ey[ix, iy, iz] = ey_int
+        self.Ez[ix, iy, iz] = ez_int
         self.apply_boundaries()
 
     def solve_fields(self) -> None:
@@ -545,7 +582,7 @@ class ElectrostaticGrid:
             self.compute_e_field()
 
     def deposit_rho_cic(self, x: float, y: float, z: float, q: float) -> None:
-        """Cloud-in-cell charge deposition onto cell-centered rho."""
+        """Cloud-in-cell charge deposition onto grid-node rho."""
         pos = self.position_in_domain(np.array([x, y, z]))
         self._deposit_scalar(
             self.rho,
@@ -558,9 +595,11 @@ class ElectrostaticGrid:
         self,
         positions: NDArray[np.floating],
         charges: NDArray[np.floating],
+        *,
+        in_place: bool = False,
     ) -> None:
         """Vectorized CIC charge deposition for ``(N, 3)`` positions and ``(N,)`` charges."""
-        pos = self.position_in_domain_batch(positions)
+        pos = self.position_in_domain_batch(positions, in_place=in_place)
         charges_arr = np.asarray(charges, dtype=np.float64)
         if charges_arr.ndim != 1 or charges_arr.shape[0] != pos.shape[0]:
             raise ValueError("charges must have shape (N,) matching positions")
@@ -569,6 +608,8 @@ class ElectrostaticGrid:
         if self._particle_backend == "numba" and self.boundary == "periodic":
             from pic_kernels import deposit_cic_periodic
 
+            if self._deposit_partial is None:
+                self._init_deposit_partial()
             deposit_cic_periodic(
                 self.rho,
                 pos,
@@ -580,6 +621,7 @@ class ElectrostaticGrid:
                 self.ny,
                 self.nz,
                 self.ng,
+                self._deposit_partial,
             )
         else:
             self._deposit_scalar_batch(
@@ -597,9 +639,14 @@ class ElectrostaticGrid:
         ez = self._gather_scalar(self.Ez, pos, (0.0, 0.0, 0.0))
         return np.array([ex, ey, ez], dtype=np.float64)
 
-    def gather_e_cic_batch(self, positions: NDArray[np.floating]) -> NDArray[np.float64]:
+    def gather_e_cic_batch(
+        self,
+        positions: NDArray[np.floating],
+        *,
+        in_place: bool = False,
+    ) -> NDArray[np.float64]:
         """Trilinear interpolation of E for ``(N, 3)`` particle positions; returns ``(N, 3)``."""
-        pos = self.position_in_domain_batch(positions)
+        pos = self.position_in_domain_batch(positions, in_place=in_place)
         if self._particle_backend == "numba" and self.boundary == "periodic":
             from pic_kernels import gather_e_cic_periodic
 
