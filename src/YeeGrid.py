@@ -4,6 +4,9 @@ Date: 2026-06-16
 Description:
     3D Yee staggered grid for electromagnetic PIC.
 
+    WIP — not used by live electrostatic examples (``examples/``); covered only
+    by unit tests until an EM-PIC driver is wired. See ``tests/test_yee_grid.py``.
+
     Indexing convention (ng guard cells per side):
       - Cell-centered rho, J: interior indices ng : ng+nx, etc.
       - Ex at x-faces:     ng : ng+nx+1 along x
@@ -34,30 +37,8 @@ if TYPE_CHECKING:
 
 BoundaryKind = Literal["periodic", "anode", "reflecting"]
 
-def _periodic_along_axis(field: NDArray[np.floating], axis: int, ng: int) -> None:
-    """Copy interior face values into guard cells along one axis."""
-    if ng == 0:
-        return
-
-    n = field.shape[axis]
-    interior = n - 2 * ng
-    idx = [slice(None)] * field.ndim
-    
-    lo = idx.copy()
-    lo[axis] = slice(0, ng)
-    hi = idx.copy()
-    hi[axis] = slice(interior + ng - 1, interior + 2 * ng - 1)
-    field[tuple(lo)] = field[tuple(hi)]
-
-    lo[axis] = slice(n - ng, n)
-    hi[axis] = slice(ng, 2 * ng)
-    field[tuple(lo)] = field[tuple(hi)]
-
-
-def _periodic_field(field: NDArray[np.floating], ng: int) -> None:
-    for axis in range(field.ndim):
-        _periodic_along_axis(field, axis, ng)
-
+from grid_common import periodic_along_axis as _periodic_along_axis
+from grid_common import periodic_field as _periodic_field
 
 def _shape_ex(nx: int, ny: int, nz: int, ng: int) -> tuple[int, int, int]:
     return nx + 1 + 2 * ng, ny + 2 * ng, nz + 2 * ng
@@ -341,15 +322,15 @@ class YeeGrid:
         self.apply_boundaries()
 
     def update_e(self, dt: float) -> None:
-        """Advance E by dt using Ampere's law: dE/dt = curl(B)/eps0 - J/eps0."""
+        """Advance E by dt using Ampere's law: dE/dt = curl(B)/(mu0*eps0) - J/eps0."""
         ng = self.ng
         nx, ny, nz = self.nx, self.ny, self.nz
-        coeff = dt / self.eps0
+        curl_coeff = dt / (self.mu0 * self.eps0)
 
         ib = slice(ng, ng + nx + 1)
         jb = slice(ng, ng + ny)
         kb = slice(ng, ng + nz)
-        self.Ex[ib, jb, kb] += coeff * (
+        self.Ex[ib, jb, kb] += curl_coeff * (
             np.diff(self.Bz[ib, slice(ng, ng + ny + 1), kb], axis=1) / self.dy
             - np.diff(self.By[ib, jb, slice(ng, ng + nz + 1)], axis=2) / self.dz
         )
@@ -358,7 +339,7 @@ class YeeGrid:
         ib = slice(ng, ng + nx)
         jb = slice(ng, ng + ny + 1)
         kb = slice(ng, ng + nz)
-        self.Ey[ib, jb, kb] += coeff * (
+        self.Ey[ib, jb, kb] += curl_coeff * (
             np.diff(self.Bx[ib, jb, slice(ng, ng + nz + 1)], axis=2) / self.dz
             - np.diff(self.Bz[slice(ng, ng + nx + 1), jb, kb], axis=0) / self.dx
         )
@@ -367,7 +348,7 @@ class YeeGrid:
         ib = slice(ng, ng + nx)
         jb = slice(ng, ng + ny)
         kb = slice(ng, ng + nz + 1)
-        self.Ez[ib, jb, kb] += coeff * (
+        self.Ez[ib, jb, kb] += curl_coeff * (
             np.diff(self.By[slice(ng, ng + nx + 1), jb, kb], axis=0) / self.dx
             - np.diff(self.Bx[ib, slice(ng, ng + ny + 1), kb], axis=1) / self.dy
         )
@@ -381,9 +362,55 @@ class YeeGrid:
         self.update_e(dt)
 
     def deposit_rho_cic(self, x: float, y: float, z: float, q: float) -> None:
-        """Cloud-in-cell charge deposition onto cell-centered rho."""
+        """Cloud-in-cell charge deposition onto cell-centered rho (Yee grid interior)."""
         pos = self.position_in_domain(np.array([x, y, z]))
         self._deposit_scalar(self.rho, pos, q / (self.dx * self.dy * self.dz), (0.0, 0.0, 0.0))
+
+    def deposit_rho_cic_batch(
+        self,
+        positions: NDArray[np.floating],
+        charges: NDArray[np.floating],
+    ) -> None:
+        """Batch CIC rho deposit for ``(N, 3)`` positions (same API as ElectrostaticGrid)."""
+        pos = np.asarray(positions, dtype=np.float64).copy()
+        if pos.ndim != 2 or pos.shape[1] != 3:
+            raise ValueError("positions must have shape (N, 3)")
+        if self.boundary == "periodic":
+            lengths = np.array(self.domain_lengths, dtype=np.float64)
+            pos %= lengths
+        else:
+            pos = self.clamp_position(pos, self.domain_lengths, (self.dx, self.dy, self.dz))
+
+        charges_arr = np.asarray(charges, dtype=np.float64)
+        if charges_arr.ndim != 1 or charges_arr.shape[0] != pos.shape[0]:
+            raise ValueError("charges must have shape (N,) matching positions")
+        cell_volume = self.dx * self.dy * self.dz
+        values = charges_arr / cell_volume
+
+        if self.boundary == "periodic":
+            try:
+                from pic_kernels import deposit_cic_periodic, get_num_threads
+
+                partial = np.zeros((get_num_threads(), self.rho.size), dtype=np.float64)
+                deposit_cic_periodic(
+                    self.rho,
+                    pos,
+                    values,
+                    self.dx,
+                    self.dy,
+                    self.dz,
+                    self.nx,
+                    self.ny,
+                    self.nz,
+                    self.ng,
+                    partial,
+                )
+                return
+            except ImportError:
+                pass
+
+        for i in range(pos.shape[0]):
+            self._deposit_scalar(self.rho, pos[i], values[i], (0.0, 0.0, 0.0))
 
     def deposit_j_cic(
         self,
@@ -395,7 +422,12 @@ class YeeGrid:
         vz: float,
         q: float,
     ) -> None:
-        """Cloud-in-cell current deposition onto staggered J components."""
+        """
+        Cloud-in-cell current deposition onto staggered J components.
+
+        WIP: this CIC J deposit is not charge-conserving; a full EM driver needs
+        Esirkepov/Villasenor-Buneman or equivalent (see plan B2).
+        """
         pos = self.position_in_domain(np.array([x, y, z]))
         jx = q * vx / (self.dy * self.dz)
         jy = q * vy / (self.dx * self.dz)
@@ -420,6 +452,28 @@ class YeeGrid:
         by = self._gather_component(self.By, pos, (0.0, 0.5, 0.0))
         bz = self._gather_component(self.Bz, pos, (0.0, 0.0, 0.5))
         return np.array([bx, by, bz], dtype=np.float64)
+
+    def gather_e_cic_batch(self, positions: NDArray[np.floating]) -> NDArray[np.float64]:
+        """Batch staggered E gather; returns ``(N, 3)`` (WIP EM driver helper)."""
+        pos = np.asarray(positions, dtype=np.float64)
+        if pos.ndim != 2 or pos.shape[1] != 3:
+            raise ValueError("positions must have shape (N, 3)")
+        n = pos.shape[0]
+        e_out = np.empty((n, 3), dtype=np.float64)
+        for i in range(n):
+            e_out[i] = self.gather_e_cic(float(pos[i, 0]), float(pos[i, 1]), float(pos[i, 2]))
+        return e_out
+
+    def gather_b_cic_batch(self, positions: NDArray[np.floating]) -> NDArray[np.float64]:
+        """Batch staggered B gather; returns ``(N, 3)`` (WIP EM driver helper)."""
+        pos = np.asarray(positions, dtype=np.float64)
+        if pos.ndim != 2 or pos.shape[1] != 3:
+            raise ValueError("positions must have shape (N, 3)")
+        n = pos.shape[0]
+        b_out = np.empty((n, 3), dtype=np.float64)
+        for i in range(n):
+            b_out[i] = self.gather_b_cic(float(pos[i, 0]), float(pos[i, 1]), float(pos[i, 2]))
+        return b_out
 
     def _grid_coords(
         self,
