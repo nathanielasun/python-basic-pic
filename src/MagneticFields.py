@@ -4,6 +4,9 @@ Date: 2026-06-17
 Description:
     Prescribed spacetime-dependent magnetic field sources for PIC drivers.
 
+    WIP — not used by live electrostatic examples (``examples/``); covered only
+    by unit tests until an EM-PIC driver is wired.
+
     Wave sources are authored in a fixed local Cartesian frame (propagation
     along local +z'). Spatial rotation into the PIC grid is applied only
     through ``field_frame.PolarTransformedField`` / ``WaveFrame``.
@@ -26,7 +29,6 @@ from numpy.typing import NDArray
 from field_frame import (
     PolarTransformedField,
     PolarizationKind,
-    TransformedField,
     WaveFrame,
     evaluate_gaussian_pulse_local,
     evaluate_polarized_wave_local,
