@@ -26,10 +26,11 @@ from numpy.typing import NDArray
 from field_frame import (
     PolarTransformedField,
     PolarizationKind,
-    TransformedField,
     WaveFrame,
     evaluate_gaussian_pulse_local,
     evaluate_polarized_wave_local,
+    elliptical_components,
+    elliptical_components_cos,
     local_wavevector,
     normalize_envelope_width,
     resolve_k_magnitude,
@@ -39,6 +40,7 @@ from field_io import (
     FieldInterpolator,
     load_field_file,
     phase,
+    phase_batch,
 )
 
 E_COMPONENTS = ("Ex", "Ey", "Ez")
@@ -481,6 +483,17 @@ class ElectricFields:
             return self._interpolator.at(pos, t)
         return self._analytical(pos, t)
 
+    def at_batch(self, positions: NDArray[np.floating], t: float = 0.0) -> NDArray[np.float64]:
+        """Evaluate E at ``(N, 3)`` positions; returns ``(N, 3)``."""
+        pos = np.asarray(positions, dtype=np.float64)
+        if pos.ndim != 2 or pos.shape[1] != 3:
+            raise ValueError("positions must have shape (N, 3)")
+        if self.mode == ElectricFieldMode.FILE:
+            if self._interpolator is None:
+                raise RuntimeError("file-backed electric field is not initialized")
+            return self._interpolator.at_batch(pos, t)
+        return self._analytical_batch(pos, t)
+
     def on_grid(
         self,
         x: NDArray[np.floating],
@@ -569,6 +582,111 @@ class ElectricFields:
 
         raise RuntimeError(f"unsupported electric field mode: {self.mode!r}")
 
+    def _polarized_wave_local_batch(
+        self,
+        pos: NDArray[np.floating],
+        t: float,
+        spec: ElectricFieldSpec,
+        *,
+        waveform: Literal["sin", "cos"],
+    ) -> NDArray[np.float64]:
+        phi = phase_batch(spec.wavevector, pos, spec.omega, t) + spec.phase0
+        n = pos.shape[0]
+        if spec.polarization_kind == PolarizationKind.LINEAR:
+            carrier = np.sin(phi) if waveform == "sin" else np.cos(phi)
+            ex = spec.E0 * np.cos(spec.polarization_psi) * carrier
+            ey = spec.E0 * np.sin(spec.polarization_psi) * carrier
+            return np.column_stack([ex, ey, np.zeros(n, dtype=np.float64)])
+
+        ex = np.empty(n, dtype=np.float64)
+        ey = np.empty(n, dtype=np.float64)
+        for i, p in enumerate(phi):
+            if waveform == "sin":
+                a1, a2 = elliptical_components(p, psi=spec.polarization_psi, delta=spec.polarization_delta)
+            else:
+                a1, a2 = elliptical_components_cos(p, psi=spec.polarization_psi, delta=spec.polarization_delta)
+            ex[i] = spec.E0 * a1
+            ey[i] = spec.E0 * a2
+        return np.column_stack([ex, ey, np.zeros(n, dtype=np.float64)])
+
+    def _analytical_batch(self, positions: NDArray[np.floating], t: float) -> NDArray[np.float64]:
+        pos = np.asarray(positions, dtype=np.float64)
+        spec = self.spec
+        n = pos.shape[0]
+
+        if self.mode == ElectricFieldMode.ZERO:
+            return np.zeros((n, 3), dtype=np.float64)
+        if self.mode == ElectricFieldMode.UNIFORM:
+            return np.broadcast_to(spec.amplitude, (n, 3)).copy()
+        if self.mode == ElectricFieldMode.LINEAR_RAMP:
+            value = spec.offset.copy()
+            value[spec.ramp_axis] += spec.ramp_rate * t
+            return np.broadcast_to(value, (n, 3)).copy()
+        if self.mode == ElectricFieldMode.SINUSOIDAL:
+            phi = phase_batch(spec.wavevector, pos, spec.omega, t) + spec.phase0
+            return np.sin(phi)[:, np.newaxis] * spec.amplitude
+        if self.mode == ElectricFieldMode.SINUSOIDAL_LINEAR:
+            return self._polarized_wave_local_batch(pos, t, spec, waveform="sin")
+        if self.mode == ElectricFieldMode.SINUSOIDAL_ELLIPTICAL:
+            return self._polarized_wave_local_batch(pos, t, spec, waveform="sin")
+        if self.mode == ElectricFieldMode.PLANE_WAVE:
+            if spec.E0 != 0.0:
+                return self._polarized_wave_local_batch(pos, t, spec, waveform="cos")
+            phi = phase_batch(spec.wavevector, pos, spec.omega, t) + spec.phase0
+            return np.cos(phi)[:, np.newaxis] * spec.amplitude
+        if self.mode == ElectricFieldMode.GAUSSIAN_PULSE:
+            if spec.E0 != 0.0:
+                phi = phase_batch(spec.wavevector, pos, spec.omega, t) + spec.phase0
+                envelope = np.exp(-np.sum(((pos - spec.envelope_center) / spec.envelope_width) ** 2, axis=1))
+                if spec.polarization_kind == PolarizationKind.LINEAR:
+                    carrier = np.cos(phi)
+                    ex = spec.E0 * np.cos(spec.polarization_psi) * carrier
+                    ey = spec.E0 * np.sin(spec.polarization_psi) * carrier
+                    field = np.column_stack([ex, ey, np.zeros(n, dtype=np.float64)])
+                else:
+                    ex = np.empty(n, dtype=np.float64)
+                    ey = np.empty(n, dtype=np.float64)
+                    for i, p in enumerate(phi):
+                        a1, a2 = elliptical_components_cos(
+                            p, psi=spec.polarization_psi, delta=spec.polarization_delta
+                        )
+                        ex[i] = spec.E0 * a1
+                        ey[i] = spec.E0 * a2
+                    field = np.column_stack([ex, ey, np.zeros(n, dtype=np.float64)])
+                return envelope[:, np.newaxis] * field
+            phi = phase_batch(spec.wavevector, pos, spec.omega, t) + spec.phase0
+            envelope = np.exp(-np.sum(((pos - spec.envelope_center) / spec.envelope_width) ** 2, axis=1))
+            return np.cos(phi)[:, np.newaxis] * spec.amplitude * envelope[:, np.newaxis]
+
+        raise RuntimeError(f"unsupported electric field mode: {self.mode!r}")
+
+
+def plane_wave_em_pair(
+    E0: float,
+    omega: float,
+    *,
+    k_magnitude: float | None = None,
+    wavelength: float | None = None,
+    phase0: float = 0.0,
+    psi: float = 0.0,
+    c: float | None = None,
+) -> tuple[ElectricFields, "MagneticFields"]:
+    """
+    Maxwell-consistent vacuum plane-wave pair in the local source frame (|E| = c|B|).
+
+    Returns ``(ElectricFields, MagneticFields)`` for future EM-PIC drivers; live
+    electrostatic examples remain B = 0.
+    """
+    from MagneticFields import MagneticFields
+
+    k_mag = resolve_k_magnitude(wavevector=None, k_magnitude=k_magnitude, wavelength=wavelength)
+    if c is None:
+        c = 299792458.0
+    B0 = E0 / c
+    efield = ElectricFields.plane_wave_local(E0, omega, k_magnitude=k_mag, phase0=phase0, psi=psi)
+    bfield = MagneticFields.plane_wave_local(B0, omega, k_magnitude=k_mag, phase0=phase0, psi=psi)
+    return efield, bfield
+
 
 class ElectricFieldsSum:
     """Superposition of multiple prescribed electric field sources."""
@@ -580,6 +698,17 @@ class ElectricFieldsSum:
         total = np.zeros(3, dtype=np.float64)
         for source in self.sources:
             total += source.at(pos, t)
+        return total
+
+    def at_batch(self, positions: NDArray[np.floating], t: float = 0.0) -> NDArray[np.float64]:
+        pos = np.asarray(positions, dtype=np.float64)
+        total = np.zeros((pos.shape[0], 3), dtype=np.float64)
+        for source in self.sources:
+            if hasattr(source, "at_batch"):
+                total += source.at_batch(pos, t)
+            else:
+                for i in range(pos.shape[0]):
+                    total[i] += source.at(pos[i], t)
         return total
 
     def __add__(self, other: object) -> ElectricFieldsSum:
