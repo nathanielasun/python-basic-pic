@@ -256,14 +256,17 @@ class WaveFrame:
 
     @property
     def e1(self) -> NDArray[np.float64]:
+        """First transverse basis vector (local x / polarization reference) in lab coords."""
         return self.lab_from_local[:, 0].copy()
 
     @property
     def e2(self) -> NDArray[np.float64]:
+        """Second transverse basis vector (local y) in lab coords; e1 x e2 = k_hat."""
         return self.lab_from_local[:, 1].copy()
 
     @property
     def k_hat(self) -> NDArray[np.float64]:
+        """Unit propagation direction (local +z) expressed in lab coordinates."""
         return self.lab_from_local[:, 2].copy()
 
     @classmethod
@@ -274,6 +277,14 @@ class WaveFrame:
         polarization: Sequence[float] | NDArray[np.floating] | None = None,
         origin: Sequence[float] | NDArray[np.floating] | None = None,
     ) -> WaveFrame:
+        """
+        Build a frame from an explicit propagation direction in lab coordinates.
+
+        ``k_direction`` need not be unit length; it defines local +z after
+        normalization. Optional ``polarization`` pins the local x-axis (e1) by
+        projecting a lab-frame vector orthogonal to ``k_hat``. Use this when
+        incidence is specified as a Cartesian vector rather than spherical angles.
+        """
         k_hat = normalize_vector(k_direction, name="k_direction")
         e1, e2 = transverse_basis(k_hat, polarization)
         origin_arr = (
@@ -316,6 +327,12 @@ class WaveFrame:
 
     @classmethod
     def identity(cls, origin: Sequence[float] | NDArray[np.floating] | None = None) -> WaveFrame:
+        """
+        Lab-aligned frame: local axes coincide with simulation x, y, z.
+
+        Use when a source is already defined in lab coordinates or when no
+        rotation is needed before wrapping with ``PolarTransformedField``.
+        """
         origin_arr = (
             np.zeros(3, dtype=np.float64)
             if origin is None
@@ -324,22 +341,27 @@ class WaveFrame:
         return cls(origin=origin_arr, lab_from_local=np.eye(3, dtype=np.float64))
 
     def position_to_local(self, position_lab: Sequence[float] | NDArray[np.floating]) -> NDArray[np.float64]:
+        """Map a lab-frame position to local coordinates: r_local = R^T (r_lab - origin)."""
         r_lab = np.asarray(position_lab, dtype=np.float64)
         return self.lab_from_local.T @ (r_lab - self.origin)
 
     def position_to_lab(self, position_local: Sequence[float] | NDArray[np.floating]) -> NDArray[np.float64]:
+        """Map a local position back to the lab frame: r_lab = origin + R r_local."""
         r_local = np.asarray(position_local, dtype=np.float64)
         return self.origin + self.lab_from_local @ r_local
 
     def vector_to_lab(self, vector_local: Sequence[float] | NDArray[np.floating]) -> NDArray[np.float64]:
+        """Rotate a vector from local to lab components (ignores ``origin``)."""
         v_local = np.asarray(vector_local, dtype=np.float64)
         return self.lab_from_local @ v_local
 
     def vector_to_local(self, vector_lab: Sequence[float] | NDArray[np.floating]) -> NDArray[np.float64]:
+        """Rotate a vector from lab to local components (ignores ``origin``)."""
         v_lab = np.asarray(vector_lab, dtype=np.float64)
         return self.lab_from_local.T @ v_lab
 
     def wavevector_lab(self, k_magnitude: float) -> NDArray[np.float64]:
+        """Return the lab-frame wavevector k = |k| k_hat for a local +z source."""
         return k_magnitude * self.k_hat
 
 
@@ -354,15 +376,44 @@ class PolarTransformedField:
     """
 
     def __init__(self, source: object, frame: WaveFrame) -> None:
+        """
+        Wrap a locally-authored ``ElectricFields`` / ``MagneticFields`` source.
+
+        ``source`` is evaluated in the wave frame; results are rotated into the
+        PIC lab frame for particle gather or diagnostics.
+        """
         self.source = source
         self.frame = frame
 
     def at(self, pos: NDArray[np.floating], t: float = 0.0) -> NDArray[np.float64]:
+        """Evaluate the rotated field at one lab-frame position and time."""
         r_local = self.frame.position_to_local(pos)
         field_local = self.source.at(r_local, t)
         return self.frame.vector_to_lab(field_local)
 
+    def at_batch(self, positions: NDArray[np.floating], t: float = 0.0) -> NDArray[np.float64]:
+        """
+        Vectorized lab-frame evaluation for ``(N, 3)`` particle positions.
+
+        Positions are mapped to local coordinates in batch, the source is
+        evaluated (via ``at_batch`` when available), and field vectors are
+        rotated back to lab components.
+        """
+        pos = np.asarray(positions, dtype=np.float64)
+        if pos.ndim != 2 or pos.shape[1] != 3:
+            raise ValueError("positions must have shape (N, 3)")
+        r_local = (pos - self.frame.origin) @ self.frame.lab_from_local
+        if hasattr(self.source, "at_batch"):
+            field_local = self.source.at_batch(r_local, t)
+        else:
+            n = pos.shape[0]
+            field_local = np.empty((n, 3), dtype=np.float64)
+            for i in range(n):
+                field_local[i] = self.source.at(r_local[i], t)
+        return field_local @ self.frame.lab_from_local.T
+
     def __add__(self, other: object) -> object:
+        """Superpose with another prescribed field; defers to typed sum helpers."""
         from ElectricFields import ElectricFields, ElectricFieldsSum
         from MagneticFields import MagneticFields, MagneticFieldsSum
 
@@ -377,16 +428,32 @@ class TransformedFieldSum:
     """Superposition of polar-transformed and/or native prescribed field sources."""
 
     def __init__(self, sources: list[object]) -> None:
+        """Collect one or more native or transformed field sources."""
         self.sources = sources
 
     def at(self, pos: NDArray[np.floating], t: float = 0.0) -> NDArray[np.float64]:
+        """Sum ``source.at(pos, t)`` over all wrapped sources."""
         total = np.zeros(3, dtype=np.float64)
         for source in self.sources:
             total += source.at(pos, t)
         return total
 
+    def at_batch(self, positions: NDArray[np.floating], t: float = 0.0) -> NDArray[np.float64]:
+        """Sum batched evaluations over all wrapped sources; returns ``(N, 3)``."""
+        pos = np.asarray(positions, dtype=np.float64)
+        total = np.zeros((pos.shape[0], 3), dtype=np.float64)
+        for source in self.sources:
+            if hasattr(source, "at_batch"):
+                total += source.at_batch(pos, t)
+            else:
+                for i in range(pos.shape[0]):
+                    total[i] += source.at(pos[i], t)
+        return total
+
     def __add__(self, other: object) -> TransformedFieldSum:
+        """Append another source and return a new sum."""
         return TransformedFieldSum([*self.sources, other])
 
 
+# Backward-compatible alias used by older imports and docs.
 TransformedField = PolarTransformedField
