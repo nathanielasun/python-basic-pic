@@ -12,6 +12,10 @@ Description:
     normalized PIC. Relativistic pushers accept velocity ``v`` and internally
     use proper velocity ``u = gamma * v``.
 
+    Batch usage for ``(N, 3)`` velocity and per-particle field arrays::
+
+        vel = Pushers.push_batch("boris", vel, E, B, q, m, dt)
+
     Typical driver usage after field gather::
 
         E, B = grid.gather_boris_fields(x, y, z)
@@ -22,6 +26,7 @@ Description:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from enum import StrEnum
 
 import numpy as np
@@ -40,6 +45,22 @@ def _as_vec3(value: NDArray[np.floating]) -> NDArray[np.float64]:
     if arr.shape != (3,):
         raise ValueError("expected a 3-component vector")
     return arr
+
+
+def _as_batch_fields(
+    vel: NDArray[np.floating],
+    E: NDArray[np.floating],
+    B: NDArray[np.floating],
+) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
+    """Coerce ``vel``, ``E``, and ``B`` to matching ``(N, 3)`` float64 arrays."""
+    v = np.asarray(vel, dtype=np.float64)
+    e = np.asarray(E, dtype=np.float64)
+    b = np.asarray(B, dtype=np.float64)
+    if v.ndim != 2 or v.shape[1] != 3:
+        raise ValueError("vel must have shape (N, 3)")
+    if e.shape != v.shape or b.shape != v.shape:
+        raise ValueError("vel, E, B must have shape (N, 3)")
+    return v, e, b
 
 
 def lorentz_gamma_from_velocity(vel: NDArray[np.floating], c: float) -> float:
@@ -88,6 +109,62 @@ def boris_push(
     v_plus = v_minus + np.cross(v_prime, s)
 
     return v_plus + qmdt * _as_vec3(E) / 2.0
+
+
+def _boris_push_batch(
+    vel: NDArray[np.floating],
+    E: NDArray[np.floating],
+    B: NDArray[np.floating],
+    q: float,
+    m: float,
+    dt: float,
+) -> NDArray[np.float64]:
+    """Vectorized classical Boris pusher for ``(N, 3)`` arrays."""
+    qmdt = (q / m) * dt
+    v, e, b = _as_batch_fields(vel, E, B)
+
+    v_minus = v + qmdt * e / 2.0
+    t_vec = qmdt * b / 2.0
+    t_sq = np.sum(t_vec * t_vec, axis=1)
+    s = 2.0 * t_vec / (1.0 + t_sq)[:, np.newaxis]
+    v_prime = v_minus + np.cross(v_minus, t_vec)
+    v_plus = v_minus + np.cross(v_prime, s)
+    return v_plus + qmdt * e / 2.0
+
+
+def boris_push_batch(
+    vel: NDArray[np.floating],
+    E: NDArray[np.floating],
+    B: NDArray[np.floating],
+    q: float,
+    m: float,
+    dt: float,
+) -> NDArray[np.float64]:
+    """Classical Boris pusher for ``(N, 3)`` velocity and field arrays."""
+    return _boris_push_batch(vel, E, B, q, m, dt)
+
+
+def _push_batch_scalar(
+    pusher: Callable[..., NDArray[np.float64]],
+    vel: NDArray[np.floating],
+    E: NDArray[np.floating],
+    B: NDArray[np.floating],
+    q: float,
+    m: float,
+    dt: float,
+    *,
+    c: float,
+    relativistic: bool,
+) -> NDArray[np.float64]:
+    """Apply a single-particle pusher row-wise to ``(N, 3)`` arrays."""
+    v, e, b = _as_batch_fields(vel, E, B)
+    out = np.empty_like(v)
+    for i in range(v.shape[0]):
+        if relativistic:
+            out[i] = pusher(v[i], e[i], b[i], q, m, dt, c=c)
+        else:
+            out[i] = pusher(v[i], e[i], b[i], q, m, dt)
+    return out
 
 
 def boris_relativistic_push(
@@ -272,10 +349,15 @@ class Pushers:
         PusherKind.HIGUERA_CARY: higuera_cary_push,
     }
 
+    _BATCH_DISPATCH: dict[PusherKind, Callable[..., NDArray[np.float64]]] = {
+        PusherKind.BORIS: _boris_push_batch,
+    }
+
     boris = staticmethod(boris_push)
     boris_relativistic = staticmethod(boris_relativistic_push)
     vay = staticmethod(vay_push)
     higuera_cary = staticmethod(higuera_cary_push)
+    boris_batch = staticmethod(boris_push_batch)
 
     @classmethod
     def push(
@@ -295,6 +377,34 @@ class Pushers:
         if pusher_kind is PusherKind.BORIS:
             return pusher(vel, E, B, q, m, dt)
         return pusher(vel, E, B, q, m, dt, c=c)
+
+    @classmethod
+    def push_batch(
+        cls,
+        kind: PusherKind | str,
+        vel: NDArray[np.floating],
+        E: NDArray[np.floating],
+        B: NDArray[np.floating],
+        q: float,
+        m: float,
+        dt: float,
+        *,
+        c: float = 1.0,
+    ) -> NDArray[np.float64]:
+        """
+        Batch pusher for ``(N, 3)`` velocity and per-particle field arrays.
+
+        Boris uses a vectorized kernel; other kinds fall back to the scalar
+        pusher applied row-wise until a dedicated batch kernel is added.
+        """
+        pusher_kind = PusherKind(kind)
+        batch_pusher = cls._BATCH_DISPATCH.get(pusher_kind)
+        if batch_pusher is not None:
+            return batch_pusher(vel, E, B, q, m, dt)
+
+        pusher = cls._DISPATCH[pusher_kind]
+        relativistic = pusher_kind is not PusherKind.BORIS
+        return _push_batch_scalar(pusher, vel, E, B, q, m, dt, c=c, relativistic=relativistic)
 
     @classmethod
     def available(cls) -> tuple[PusherKind, ...]:
