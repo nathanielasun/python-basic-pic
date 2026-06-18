@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenBLAS NumPy — Setup &amp; Troubleshooting</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="site-header">
+    <h1>OpenBLAS NumPy setup</h1>
+    <span class="subtitle">Troubleshooting &amp; manual rebuild</span>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <nav>
+        <div class="nav-group">
+          <div class="nav-group-title">Docs</div>
+          <a href="index.html">API reference</a>
+          <a href="../README.md">README</a>
+        </div>
+        <div class="nav-group">
+          <div class="nav-group-title">On this page</div>
+          <a href="#verify">Verify install</a>
+          <a href="#manual-rebuild">Manual rebuild</a>
+          <a href="#accelerate">Accelerate vs OpenBLAS</a>
+          <a href="#ninja">ninja not found</a>
+          <a href="#import-error">numpy import error</a>
+          <a href="#stale-numpy">Stale numpy/ directory</a>
+          <a href="#pkg-config">pkg-config / OpenBLAS</a>
+          <a href="#xcode">Xcode CLI tools</a>
+          <a href="#main-branch">Building from main</a>
+        </div>
+      </nav>
+    </aside>
+
+    <main class="content">
+
+      <section id="intro">
+        <h2>Overview</h2>
+        <p class="lead">
+          This project builds NumPy from source linked against <strong>OpenBLAS</strong> so
+          <code>OPENBLAS_NUM_THREADS</code> can be controlled at runtime. Platform setup scripts
+          (<code>MacOS-setup.sh</code>, <code>Unix-setup.sh</code>, <code>Windows-setup.ps1</code>)
+          automate the flow; this page documents manual fixes when something goes wrong.
+        </p>
+        <div class="callout">
+          <strong>Quick check:</strong> after <code>source .venv/bin/activate</code>, run
+          <code>python -c "import numpy as np; print(np.__config__.show(mode='dicts')['Build Dependencies']['blas']['name'])"</code>
+          — expected output: <code>openblas</code>.
+        </div>
+      </section>
+
+      <section id="verify">
+        <h2>Verify the install</h2>
+        <pre><code>python -c "import numpy as np; c=np.__config__.show(mode='dicts'); print(np.__version__, c['Build Dependencies']['blas']['name'])"
+python -c "import numpy; print(numpy.__file__)"</code></pre>
+        <p>
+          Expected: version <strong>2.4.6</strong> (or your <code>NUMPY_VERSION</code>), BLAS name
+          <code>openblas</code>, and <code>numpy.__file__</code> under
+          <code>.venv/lib/.../site-packages/</code>.
+        </p>
+        <p>
+          Always run <code>import numpy</code> from the <strong>project root</strong>, not from inside
+          <code>.build/numpy</code>, so Python loads the venv install rather than the source tree.
+        </p>
+      </section>
+
+      <section id="manual-rebuild">
+        <h2>Manual rebuild</h2>
+        <p>Re-run the platform setup script for a clean rebuild. To compile manually:</p>
+        <pre><code>source .venv/bin/activate
+export PATH="$(pwd)/.venv/bin:$PATH"
+
+# macOS only — ensure pkg-config finds Homebrew OpenBLAS
+export PKG_CONFIG_PATH="$(brew --prefix)/opt/openblas/lib/pkgconfig:$PKG_CONFIG_PATH"
+
+# Optional: force a fresh source checkout
+rm -rf .build/numpy
+
+git clone --branch v2.4.6 --depth 1 --recurse-submodules \
+  https://github.com/numpy/numpy.git .build/numpy
+
+cd .build/numpy
+pip install . --verbose --no-build-isolation \
+  -Csetup-args=-Dblas=openblas \
+  -Csetup-args=-Dlapack=openblas \
+  -Csetup-args=-Dallow-noblas=false
+
+cd ../..
+python -c "import numpy as np; print(np.__version__, np.__config__.show(mode='dicts')['Build Dependencies']['blas']['name'])"</code></pre>
+      </section>
+
+      <section id="accelerate">
+        <h2>Apple Accelerate linked instead of OpenBLAS</h2>
+        <p><strong>Symptom:</strong> <code>np.__config__.show(mode='dicts')</code> reports
+        <code>blas: accelerate</code>, even though Homebrew OpenBLAS is installed. Grepping config
+        output for the string <code>openblas</code> can still match (Accelerate entries include
+        <code>"openblas configuration": "unknown"</code>), so that check is misleading.</p>
+        <p><strong>Cause:</strong> On macOS, NumPy’s build system prefers Apple Accelerate unless BLAS
+        is explicitly set to OpenBLAS at compile time.</p>
+        <p><strong>Fix:</strong> Build with explicit meson options and disallow the no-BLAS fallback:</p>
+        <pre><code>pip install . --no-build-isolation \
+  -Csetup-args=-Dblas=openblas \
+  -Csetup-args=-Dlapack=openblas \
+  -Csetup-args=-Dallow-noblas=false</code></pre>
+        <p>Verify with the BLAS <strong>name</strong>, not a text grep:</p>
+        <pre><code>python -c "import numpy as np; print(np.__config__.show(mode='dicts')['Build Dependencies']['blas']['name'])"</code></pre>
+      </section>
+
+      <section id="ninja">
+        <h2><code>meson-python: error: Could not find ninja</code></h2>
+        <p><strong>Symptom:</strong> Metadata generation fails during <code>pip install</code> with no
+        ninja on PATH.</p>
+        <p><strong>Cause:</strong> <code>ninja</code> is installed into <code>.venv/bin</code> by
+        <code>requirements-build.txt</code>, but meson-python looks for the <code>ninja</code>
+        <strong>executable</strong> on <code>PATH</code>. If <code>.venv/bin</code> is not on
+        <code>PATH</code>, the build fails even though <code>pip show ninja</code> succeeds.</p>
+        <p><strong>Fix:</strong></p>
+        <pre><code>export PATH="$(pwd)/.venv/bin:$PATH"</code></pre>
+        <p>The setup scripts do this automatically after creating the venv.</p>
+      </section>
+
+      <section id="import-error">
+        <h2><code>ImportError: cannot import name 'version' from 'numpy'</code></h2>
+        <p><strong>Symptom:</strong> Immediately after a successful <code>pip install</code>,
+        <code>import numpy</code> fails with an error pointing at a path inside a
+        <code>numpy/</code> source directory.</p>
+        <p><strong>Cause:</strong> Verification was run with the shell’s current directory inside a
+        NumPy <strong>source clone</strong>. Python prepends the cwd to <code>sys.path</code>.</p>
+        <p><strong>Fix:</strong> <code>cd</code> to the project root before importing.</p>
+      </section>
+
+      <section id="stale-numpy">
+        <h2>Stale <code>numpy/</code> directory in the project root</h2>
+        <p><strong>Symptom:</strong> Intermittent import errors, wrong NumPy version, or wrong BLAS
+        backend depending on which directory you run Python from.</p>
+        <p><strong>Cause:</strong> A manual <code>git clone</code> of NumPy into the repo root was left
+        behind from an earlier build attempt.</p>
+        <p><strong>Fix:</strong></p>
+        <pre><code>rm -rf numpy builddir</code></pre>
+        <p>Only the install in <code>.venv/lib/.../site-packages</code> should remain. Setup scripts
+        remove these directories if present before building.</p>
+      </section>
+
+      <section id="pkg-config">
+        <h2>OpenBLAS not found via pkg-config</h2>
+        <p><strong>Symptom:</strong> Meson configures BLAS as missing or falls back to Accelerate /
+        internal routines.</p>
+        <p><strong>Cause:</strong> Homebrew installs OpenBLAS, but <code>pkg-config</code> does not
+        find it unless <code>PKG_CONFIG_PATH</code> includes Homebrew’s OpenBLAS pkgconfig directory.</p>
+        <p><strong>Fix (macOS):</strong></p>
+        <pre><code>export PKG_CONFIG_PATH="$(brew --prefix)/opt/openblas/lib/pkgconfig:$PKG_CONFIG_PATH"
+pkg-config --exists openblas && echo OK</code></pre>
+        <p>On Fedora/RHEL, the Linux setup script creates a local <code>openblas.pc</code> stub when
+        the distro package omits it.</p>
+      </section>
+
+      <section id="xcode">
+        <h2>Xcode Command Line Tools not installed</h2>
+        <p><strong>Symptom:</strong> <code>clang</code> or <code>git</code> not found; compiler sanity
+        checks fail.</p>
+        <p><strong>Fix:</strong></p>
+        <pre><code>xcode-select --install</code></pre>
+        <p>Re-run the setup script after the installer finishes.</p>
+      </section>
+
+      <section id="main-branch">
+        <h2>Building from <code>main</code> without a release tag</h2>
+        <p><strong>Symptom:</strong> Installed version looks like <code>2.6.0.dev0+git...</code>;
+        behavior differs from the pinned release; BLAS defaults may differ.</p>
+        <p><strong>Cause:</strong> Cloning the default branch instead of a stable tag (this project
+        pins <strong>v2.4.6</strong>).</p>
+        <p><strong>Fix:</strong> Use the setup script, or clone explicitly:</p>
+        <pre><code>git clone --branch v2.4.6 --depth 1 --recurse-submodules \
+  https://github.com/numpy/numpy.git .build/numpy</code></pre>
+        <p>Override with <code>NUMPY_VERSION=2.4.6 ./MacOS-setup.sh</code> if needed.</p>
+      </section>
+
+    </main>
+  </div>
+
+  <script src="js/docs.js"></script>
+</body>
+</html>
