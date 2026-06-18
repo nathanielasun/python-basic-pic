@@ -1,7 +1,7 @@
 """
 Numba parallel kernels for electrostatic PIC particle operations.
 
-All kernels assume periodic boundaries and cell-centered CIC interpolation
+All kernels assume periodic boundaries and grid-node CIC interpolation
 with ghost padding ``ng`` matching :class:`ElectrostaticGrid`.
 """
 
@@ -84,7 +84,7 @@ if HAS_NUMBA:
                         idx = _flat_index(ii, jj, kk, ny_tot, nz_tot)
                         flat[idx] += val * wi * wj * wk
 
-    @njit(parallel=True, cache=False)
+    @njit(parallel=True, cache=True)
     def deposit_cic_periodic(
         rho: np.ndarray,
         positions: np.ndarray,
@@ -96,15 +96,19 @@ if HAS_NUMBA:
         ny: int,
         nz: int,
         ng: int,
+        partial: np.ndarray,
     ) -> None:
         """Scatter-add CIC weights onto ``rho`` (in-place) for periodic boundaries."""
         ny_tot = rho.shape[1]
         nz_tot = rho.shape[2]
         flat = rho.ravel()
         n_particles = positions.shape[0]
-        n_threads = get_num_threads()
-        partial = np.zeros((n_threads, flat.size), dtype=np.float64)
+        n_threads = partial.shape[0]
         chunk = (n_particles + n_threads - 1) // n_threads
+
+        for t in range(n_threads):
+            for i in range(flat.size):
+                partial[t, i] = 0.0
 
         for t in prange(n_threads):
             start = t * chunk
@@ -129,9 +133,11 @@ if HAS_NUMBA:
                     nz_tot,
                 )
 
-        for t in range(n_threads):
-            for i in range(flat.size):
-                flat[i] += partial[t, i]
+        for i in prange(flat.size):
+            acc = 0.0
+            for t in range(n_threads):
+                acc += partial[t, i]
+            flat[i] += acc
 
     @njit(parallel=True, cache=True)
     def gather_e_cic_periodic(
@@ -233,7 +239,8 @@ def warmup_kernels() -> None:
     dx = dy = dz = 1.0
     lx = ly = lz = 4.0
 
-    deposit_cic_periodic(rho, pos, values, dx, dy, dz, nx, ny, nz, ng)
+    partial = np.zeros((get_num_threads(), rho.size), dtype=np.float64)
+    deposit_cic_periodic(rho, pos, values, dx, dy, dz, nx, ny, nz, ng, partial)
     gather_e_cic_periodic(ex, ey, ez, pos, dx, dy, dz, nx, ny, nz, ng)
     electric_kick_b0(vel, efield, -1.0, 1e-12)
     wrap_positions_periodic(pos, lx, ly, lz)
