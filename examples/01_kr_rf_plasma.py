@@ -42,8 +42,8 @@ def main() -> None:
 
     config = ExampleConfig(
         name="Kr+ / e- RF plasma",
-        domain_length=2e-6,
-        n_cells=16,
+        domain_length=100e-6,
+        n_cells=32,
         n_density=2e20,
         macros_per_cell=5,
         dt=1e-14,

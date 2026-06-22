@@ -21,17 +21,23 @@ from Pushers import Pushers
 from common import (  # noqa: E402
     ANIMATIONS_DIR,
     DEFAULT_SUBSAMPLE,
-    E_CHARGE,
     EPS0,
-    EV_TO_J,
-    IonSpecies,
-    M_E,
-    M_KR,
     PercentProgressTracker,
     _configure_threading,
     external_field_at_particles,
     external_field_uniform,
     make_progress_tracker,
+)
+from particles import (  # noqa: E402
+    E_CHARGE,
+    IonSpecies,
+    M_E,
+    M_KR,
+    MaxwellianVelocityDistribution,
+    VelocityDistribution,
+    initialize_quasi_neutral_plasma,
+    macro_charge_from_density,
+    macro_count,
 )
 from grids import ParticleBackend, YeeGrid, wrap_positions_periodic
 from pic_animation import FrameStreamWriter, export_frames_to_video
@@ -64,6 +70,8 @@ class EMExampleConfig:
     n_steps: int = 10_000
     frame_interval: int = 500
     ion: IonSpecies = IonSpecies("Kr+", M_KR)
+    electron_velocity: VelocityDistribution | None = None
+    ion_velocity: VelocityDistribution | None = None
     electron_energy_ev: tuple[float, float] = (100.0, 1000.0)
     ion_energy_ev: tuple[float, float] = (1.0, 10.0)
     spatial_external_field: bool = False
@@ -115,9 +123,9 @@ class EMPICSimulation:
         self.spatial_external_field = c.spatial_external_field
 
         self.dx = c.domain_length / c.n_cells
-        self.n_macro = c.macros_per_cell * c.n_cells**3
+        self.n_macro = macro_count(c.macros_per_cell, c.n_cells)
         volume = c.domain_length**3
-        self.macro_charge = c.n_density * E_CHARGE * volume / self.n_macro
+        self.macro_charge = macro_charge_from_density(c.n_density, volume, self.n_macro)
 
         self.grid = YeeGrid(
             c.n_cells,
@@ -155,26 +163,40 @@ class EMPICSimulation:
         self._init_buffers()
         self._init_leapfrog()
 
-    def _maxwellian_velocities(self, energy_j: float, mass: float, count: int) -> np.ndarray:
-        sigma = np.sqrt(2.0 * energy_j / (3.0 * mass))
-        return self.rng.normal(0.0, sigma, size=(count, 3))
-
-    def _sample_energy_j(self, ev_range: tuple[float, float]) -> float:
-        return float(self.rng.uniform(ev_range[0], ev_range[1])) * EV_TO_J
+    def _velocity_distribution(
+        self,
+        explicit: VelocityDistribution | None,
+        energy_ev_range: tuple[float, float],
+    ) -> VelocityDistribution:
+        if explicit is not None:
+            return explicit
+        return MaxwellianVelocityDistribution(energy_ev_range=energy_ev_range)
 
     def _init_particles(self) -> None:
         c = self.config
-        L = self.domain_length
-        self.q_e = -self.macro_charge
-        self.q_i = self.ion.charge_number * self.macro_charge
-
-        e_energy = self._sample_energy_j(c.electron_energy_ev)
-        i_energy = self._sample_energy_j(c.ion_energy_ev)
-
-        self.pos_e = self.rng.uniform(0.0, L, size=(self.n_macro, 3))
-        self.vel_e = self._maxwellian_velocities(e_energy, M_E, self.n_macro)
-        self.pos_i = self.rng.uniform(0.0, L, size=(self.n_macro, 3))
-        self.vel_i = self._maxwellian_velocities(i_energy, self.ion.mass, self.n_macro)
+        plasma = initialize_quasi_neutral_plasma(
+            self.rng,
+            n_macro=self.n_macro,
+            n_density=c.n_density,
+            domain_length=self.domain_length,
+            electron_mass=M_E,
+            ion_mass=self.ion.mass,
+            ion_charge_number=self.ion.charge_number,
+            electron_velocity=self._velocity_distribution(
+                c.electron_velocity,
+                c.electron_energy_ev,
+            ),
+            ion_velocity=self._velocity_distribution(
+                c.ion_velocity,
+                c.ion_energy_ev,
+            ),
+        )
+        self.q_e = plasma.electrons.charge
+        self.q_i = plasma.ions.charge
+        self.pos_e = plasma.electrons.positions
+        self.vel_e = plasma.electrons.velocities
+        self.pos_i = plasma.ions.positions
+        self.vel_i = plasma.ions.velocities
 
     def _init_buffers(self) -> None:
         n_total = 2 * self.n_macro
