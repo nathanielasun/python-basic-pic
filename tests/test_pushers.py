@@ -50,6 +50,17 @@ class TestPushers(unittest.TestCase):
                 scalar = Pushers.push(kind, vel[i], efield[i], bfield[i], q, m, dt, c=c)
                 self.assertTrue(np.allclose(batch[i], scalar, rtol=1e-12, atol=1e-12))
 
+    def test_higuera_cary_batch_matches_scalar(self) -> None:
+        rng = np.random.default_rng(11)
+        vel = rng.normal(scale=0.1, size=(12, 3))
+        efield = rng.normal(scale=0.2, size=(12, 3))
+        bfield = rng.normal(scale=0.3, size=(12, 3))
+        q, m, dt, c = -1.602e-19, 9.109e-31, 1e-15, 299792458.0
+        batch = Pushers.push_batch("higuera_cary", vel, efield, bfield, q, m, dt, c=c)
+        for i in range(12):
+            scalar = Pushers.higuera_cary(vel[i], efield[i], bfield[i], q, m, dt, c=c)
+            self.assertTrue(np.allclose(batch[i], scalar, rtol=1e-10, atol=1e-12))
+
     def test_boris_uniform_b_preserves_speed(self) -> None:
         q, m, dt = 1.0, 1.0, 0.05
         B = np.array([0.0, 0.0, 1.0])

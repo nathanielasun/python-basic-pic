@@ -339,6 +339,112 @@ def higuera_cary_push(
     return proper_velocity_to_velocity(u_new, c)
 
 
+try:
+    from numba import njit, prange as _prange
+
+    _HAS_NUMBA_PUSH = True
+except ImportError:
+    _HAS_NUMBA_PUSH = False
+
+if _HAS_NUMBA_PUSH:
+
+    @njit(cache=True)
+    def _higuera_cary_push_proper_numba(
+        ux: float,
+        uy: float,
+        uz: float,
+        Ex: float,
+        Ey: float,
+        Ez: float,
+        Bx: float,
+        By: float,
+        Bz: float,
+        q: float,
+        m: float,
+        dt: float,
+        c: float,
+    ) -> tuple[float, float, float]:
+        inv_c2 = 1.0 / (c * c)
+        qmt = 0.5 * q * dt / m
+
+        umx = ux + qmt * Ex
+        umy = uy + qmt * Ey
+        umz = uz + qmt * Ez
+
+        gamma_sq = 1.0 + (umx * umx + umy * umy + umz * umz) * inv_c2
+
+        betax = qmt * Bx
+        betay = qmt * By
+        betaz = qmt * Bz
+        betam = betax * betax + betay * betay + betaz * betaz
+        sigma = gamma_sq - betam
+
+        ust = (umx * betax + umy * betay + umz * betaz) * (1.0 / c)
+        gamma_inv = 1.0 / np.sqrt(0.5 * (sigma + np.sqrt(sigma * sigma + 4.0 * (betam + ust * ust))))
+
+        tx = gamma_inv * betax
+        ty = gamma_inv * betay
+        tz = gamma_inv * betaz
+        s = 1.0 / (1.0 + tx * tx + ty * ty + tz * tz)
+        umt = umx * tx + umy * ty + umz * tz
+
+        upx = s * (umx + umt * tx + umy * tz - umz * ty)
+        upy = s * (umy + umt * ty + umz * tx - umx * tz)
+        upz = s * (umz + umt * tz + umx * ty - umy * tx)
+
+        ux_out = upx + qmt * Ex + upy * tz - upz * ty
+        uy_out = upy + qmt * Ey + upz * tx - upx * tz
+        uz_out = upz + qmt * Ez + upx * ty - upy * tx
+        return ux_out, uy_out, uz_out
+
+    @njit(parallel=True, cache=True)
+    def _higuera_cary_push_batch(
+        vel: np.ndarray,
+        E: np.ndarray,
+        B: np.ndarray,
+        q: float,
+        m: float,
+        dt: float,
+        c: float,
+    ) -> np.ndarray:
+        n_particles = vel.shape[0]
+        out = np.empty_like(vel)
+        inv_c2 = 1.0 / (c * c)
+        for p in _prange(n_particles):
+            vx, vy, vz = vel[p, 0], vel[p, 1], vel[p, 2]
+            beta2 = (vx * vx + vy * vy + vz * vz) * inv_c2
+            gamma = 1.0 / np.sqrt(1.0 - beta2)
+            ux, uy, uz = vx * gamma, vy * gamma, vz * gamma
+            ux, uy, uz = _higuera_cary_push_proper_numba(
+                ux, uy, uz,
+                E[p, 0], E[p, 1], E[p, 2],
+                B[p, 0], B[p, 1], B[p, 2],
+                q, m, dt, c,
+            )
+            gamma_u = np.sqrt(1.0 + (ux * ux + uy * uy + uz * uz) * inv_c2)
+            out[p, 0] = ux / gamma_u
+            out[p, 1] = uy / gamma_u
+            out[p, 2] = uz / gamma_u
+        return out
+
+
+def higuera_cary_push_batch(
+    vel: NDArray[np.floating],
+    E: NDArray[np.floating],
+    B: NDArray[np.floating],
+    q: float,
+    m: float,
+    dt: float,
+    *,
+    c: float = 1.0,
+) -> NDArray[np.float64]:
+    """Batch Higuera-Cary push for ``(N, 3)`` arrays."""
+    if _HAS_NUMBA_PUSH:
+        v, e, b = _as_batch_fields(vel, E, B)
+        return _higuera_cary_push_batch(v, e, b, q, m, dt, c)
+    return _push_batch_scalar(higuera_cary_push, vel, E, B, q, m, dt, c=c, relativistic=True)
+
+
 class Pushers:
     """Registry and dispatcher for explicit PIC particle pushers."""
 
@@ -351,6 +457,7 @@ class Pushers:
 
     _BATCH_DISPATCH: dict[PusherKind, Callable[..., NDArray[np.float64]]] = {
         PusherKind.BORIS: _boris_push_batch,
+        PusherKind.HIGUERA_CARY: higuera_cary_push_batch,
     }
 
     boris = staticmethod(boris_push)
@@ -394,12 +501,14 @@ class Pushers:
         """
         Batch pusher for ``(N, 3)`` velocity and per-particle field arrays.
 
-        Boris uses a vectorized kernel; other kinds fall back to the scalar
-        pusher applied row-wise until a dedicated batch kernel is added.
+        Boris and Higuera-Cary use dedicated batch kernels; other kinds fall back
+        to the scalar pusher applied row-wise.
         """
         pusher_kind = PusherKind(kind)
         batch_pusher = cls._BATCH_DISPATCH.get(pusher_kind)
         if batch_pusher is not None:
+            if pusher_kind is PusherKind.HIGUERA_CARY:
+                return batch_pusher(vel, E, B, q, m, dt, c=c)
             return batch_pusher(vel, E, B, q, m, dt)
 
         pusher = cls._DISPATCH[pusher_kind]
