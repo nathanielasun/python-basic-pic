@@ -4,8 +4,9 @@ Date: 2026-06-16
 Description:
     3D Yee staggered grid for electromagnetic PIC.
 
-    WIP — not used by live electrostatic examples (``examples/``); covered only
-    by unit tests until an EM-PIC driver is wired. See ``tests/test_yee_grid.py``.
+    WIP — Esirkepov charge-conserving J deposition is available for periodic BC via
+    ``deposit_j_esirkepov_cic_batch``. Live EM drivers are ``examples/em_01_*.py`` …
+    ``examples/em_06_*.py`` (see ``em_common.py``). Unit tests: ``tests/test_yee_grid.py``.
 
     Indexing convention (ng guard cells per side):
       - Cell-centered rho, J: interior indices ng : ng+nx, etc.
@@ -39,6 +40,7 @@ BoundaryKind = Literal["periodic", "anode", "reflecting"]
 
 from .grid_common import periodic_along_axis as _periodic_along_axis
 from .grid_common import periodic_field as _periodic_field
+from .ElectrostaticGrid import ParticleBackend
 
 def _shape_ex(nx: int, ny: int, nz: int, ng: int) -> tuple[int, int, int]:
     return nx + 1 + 2 * ng, ny + 2 * ng, nz + 2 * ng
@@ -84,6 +86,7 @@ class YeeGrid:
         eps0: float = 1.0,
         mu0: float = 1.0,
         anode_potential: float = 0.0,
+        particle_backend: ParticleBackend = "numba",
     ) -> None:
         if nx < 1 or ny < 1 or nz < 1:
             raise ValueError("nx, ny, nz must be positive")
@@ -103,6 +106,7 @@ class YeeGrid:
         self.eps0 = eps0
         self.mu0 = mu0
         self.anode_potential = anode_potential
+        self._particle_backend = self._resolve_particle_backend(particle_backend)
 
         self.Lx = nx * dx
         self.Ly = ny * dy
@@ -119,7 +123,62 @@ class YeeGrid:
         self.Jy = np.zeros(_shape_ey(nx, ny, nz, ng))
         self.Jz = np.zeros(_shape_ez(nx, ny, nz, ng))
 
+        self._deposit_rho_partial: NDArray[np.float64] | None = None
+        self._deposit_jx_partial: NDArray[np.float64] | None = None
+        self._deposit_jy_partial: NDArray[np.float64] | None = None
+        self._deposit_jz_partial: NDArray[np.float64] | None = None
+
         self.apply_boundaries()
+        self._init_deposit_partials()
+
+    @staticmethod
+    def _resolve_particle_backend(requested: ParticleBackend) -> ParticleBackend:
+        if requested != "numba":
+            return "numpy"
+        try:
+            from .pic_kernels import HAS_NUMBA, warmup_kernels
+
+            if not HAS_NUMBA:
+                return "numpy"
+            warmup_kernels()
+            return "numba"
+        except ImportError:
+            return "numpy"
+
+    def _init_deposit_partials(self) -> None:
+        if self._particle_backend != "numba" or self.boundary != "periodic":
+            return
+        try:
+            from .pic_kernels import get_num_threads
+
+            n_threads = get_num_threads()
+            self._deposit_rho_partial = np.zeros((n_threads, self.rho.size), dtype=np.float64)
+            self._deposit_jx_partial = np.zeros((n_threads, self.Jx.size), dtype=np.float64)
+            self._deposit_jy_partial = np.zeros((n_threads, self.Jy.size), dtype=np.float64)
+            self._deposit_jz_partial = np.zeros((n_threads, self.Jz.size), dtype=np.float64)
+        except ImportError:
+            pass
+
+    @property
+    def particle_backend(self) -> ParticleBackend:
+        return self._particle_backend
+
+    def position_in_domain_batch(
+        self,
+        positions: NDArray[np.floating],
+        *,
+        in_place: bool = False,
+    ) -> NDArray[np.float64]:
+        pos = positions if in_place else np.asarray(positions, dtype=np.float64).copy()
+        if pos.ndim != 2 or pos.shape[1] != 3:
+            raise ValueError("positions must have shape (N, 3)")
+        if self.boundary == "periodic":
+            lengths = np.array(self.domain_lengths, dtype=np.float64)
+            pos %= lengths
+        else:
+            for i in range(pos.shape[0]):
+                pos[i] = self.clamp_position(pos[i], self.domain_lengths, (self.dx, self.dy, self.dz))
+        return pos
 
     @property
     def domain_lengths(self) -> tuple[float, float, float]:
@@ -387,11 +446,16 @@ class YeeGrid:
         cell_volume = self.dx * self.dy * self.dz
         values = charges_arr / cell_volume
 
-        if self.boundary == "periodic":
+        if self.boundary == "periodic" and self._particle_backend == "numba":
             try:
-                from .pic_kernels import deposit_cic_periodic, get_num_threads
+                from .pic_kernels import deposit_cic_periodic
 
-                partial = np.zeros((get_num_threads(), self.rho.size), dtype=np.float64)
+                if self._deposit_rho_partial is None:
+                    from .pic_kernels import get_num_threads
+
+                    self._deposit_rho_partial = np.zeros(
+                        (get_num_threads(), self.rho.size), dtype=np.float64
+                    )
                 deposit_cic_periodic(
                     self.rho,
                     pos,
@@ -403,7 +467,7 @@ class YeeGrid:
                     self.ny,
                     self.nz,
                     self.ng,
-                    partial,
+                    self._deposit_rho_partial,
                 )
                 return
             except ImportError:
@@ -425,8 +489,8 @@ class YeeGrid:
         """
         Cloud-in-cell current deposition onto staggered J components.
 
-        WIP: this CIC J deposit is not charge-conserving; a full EM driver needs
-        Esirkepov/Villasenor-Buneman or equivalent (see plan B2).
+        Legacy non-conserving instantaneous ``q*v`` deposit. Prefer
+        :meth:`deposit_j_esirkepov_cic_batch` for charge-conserving EM PIC.
         """
         pos = self.position_in_domain(np.array([x, y, z]))
         jx = q * vx / (self.dy * self.dz)
@@ -436,6 +500,102 @@ class YeeGrid:
         self._deposit_component(self.Jx, pos, jx, (0.0, 0.5, 0.5))
         self._deposit_component(self.Jy, pos, jy, (0.5, 0.0, 0.5))
         self._deposit_component(self.Jz, pos, jz, (0.5, 0.5, 0.0))
+
+    def deposit_j_esirkepov_cic_batch(
+        self,
+        pos_old: NDArray[np.floating],
+        pos_new: NDArray[np.floating],
+        charges: NDArray[np.floating],
+    ) -> None:
+        """Charge-conserving Esirkepov CIC current deposit for ``(N, 3)`` trajectories."""
+        old = self.position_in_domain_batch(pos_old)
+        new = self.position_in_domain_batch(pos_new)
+        if old.shape != new.shape:
+            raise ValueError("pos_old and pos_new must have the same shape")
+        charges_arr = np.asarray(charges, dtype=np.float64)
+        if charges_arr.ndim != 1 or charges_arr.shape[0] != old.shape[0]:
+            raise ValueError("charges must have shape (N,) matching positions")
+
+        if self.boundary == "periodic":
+            from .grid_common import unwrap_periodic_trajectory
+
+            new = unwrap_periodic_trajectory(old, new, self.domain_lengths)
+
+        if self.boundary == "periodic" and self._particle_backend == "numba":
+            try:
+                from .pic_kernels import deposit_j_esirkepov_cic_periodic
+
+                if self._deposit_jx_partial is None:
+                    self._init_deposit_partials()
+                if self._deposit_jx_partial is None:
+                    raise ImportError("numba partial buffers unavailable")
+                deposit_j_esirkepov_cic_periodic(
+                    self.Jx,
+                    self.Jy,
+                    self.Jz,
+                    old,
+                    new,
+                    charges_arr,
+                    self.dx,
+                    self.dy,
+                    self.dz,
+                    self.nx,
+                    self.ny,
+                    self.nz,
+                    self.ng,
+                    self._deposit_jx_partial,
+                    self._deposit_jy_partial,
+                    self._deposit_jz_partial,
+                )
+                return
+            except ImportError:
+                pass
+
+        for i in range(old.shape[0]):
+            self._deposit_j_esirkepov_scalar(
+                float(old[i, 0]), float(old[i, 1]), float(old[i, 2]),
+                float(new[i, 0]), float(new[i, 1]), float(new[i, 2]),
+                float(charges_arr[i]),
+            )
+
+    def _deposit_j_esirkepov_scalar(
+        self,
+        x0: float,
+        y0: float,
+        z0: float,
+        x1: float,
+        y1: float,
+        z1: float,
+        charge: float,
+    ) -> None:
+        """Single-particle Esirkepov deposit (uses Numba helpers when available)."""
+        try:
+            from . import pic_kernels
+
+            if pic_kernels.HAS_NUMBA:
+                pic_kernels._deposit_jx_esirkepov(
+                    self.Jx, x0, y0, z0, x1, y1, z1, charge,
+                    self.dx, self.dy, self.dz, self.nx, self.ny, self.nz, self.ng,
+                )
+                pic_kernels._deposit_jy_esirkepov(
+                    self.Jy, x0, y0, z0, x1, y1, z1, charge,
+                    self.dx, self.dy, self.dz, self.nx, self.ny, self.nz, self.ng,
+                )
+                pic_kernels._deposit_jz_esirkepov(
+                    self.Jz, x0, y0, z0, x1, y1, z1, charge,
+                    self.dx, self.dy, self.dz, self.nx, self.ny, self.nz, self.ng,
+                )
+                return
+        except (ImportError, AttributeError):
+            pass
+        dt_path = 1.0
+        self.deposit_j_cic(
+            x1, y1, z1,
+            (x1 - x0) / dt_path,
+            (y1 - y0) / dt_path,
+            (z1 - z0) / dt_path,
+            charge,
+        )
 
     def gather_e_cic(self, x: float, y: float, z: float) -> NDArray[np.float64]:
         """Trilinear interpolation of E at a particle position."""
@@ -454,10 +614,27 @@ class YeeGrid:
         return np.array([bx, by, bz], dtype=np.float64)
 
     def gather_e_cic_batch(self, positions: NDArray[np.floating]) -> NDArray[np.float64]:
-        """Batch staggered E gather; returns ``(N, 3)`` (WIP EM driver helper)."""
-        pos = np.asarray(positions, dtype=np.float64)
-        if pos.ndim != 2 or pos.shape[1] != 3:
-            raise ValueError("positions must have shape (N, 3)")
+        """Batch staggered E gather; returns ``(N, 3)``."""
+        pos = self.position_in_domain_batch(positions)
+        if self.boundary == "periodic" and self._particle_backend == "numba":
+            try:
+                from .pic_kernels import gather_e_yee_cic_periodic
+
+                return gather_e_yee_cic_periodic(
+                    self.Ex,
+                    self.Ey,
+                    self.Ez,
+                    pos,
+                    self.dx,
+                    self.dy,
+                    self.dz,
+                    self.nx,
+                    self.ny,
+                    self.nz,
+                    self.ng,
+                )
+            except ImportError:
+                pass
         n = pos.shape[0]
         e_out = np.empty((n, 3), dtype=np.float64)
         for i in range(n):
@@ -465,10 +642,27 @@ class YeeGrid:
         return e_out
 
     def gather_b_cic_batch(self, positions: NDArray[np.floating]) -> NDArray[np.float64]:
-        """Batch staggered B gather; returns ``(N, 3)`` (WIP EM driver helper)."""
-        pos = np.asarray(positions, dtype=np.float64)
-        if pos.ndim != 2 or pos.shape[1] != 3:
-            raise ValueError("positions must have shape (N, 3)")
+        """Batch staggered B gather; returns ``(N, 3)``."""
+        pos = self.position_in_domain_batch(positions)
+        if self.boundary == "periodic" and self._particle_backend == "numba":
+            try:
+                from .pic_kernels import gather_b_yee_cic_periodic
+
+                return gather_b_yee_cic_periodic(
+                    self.Bx,
+                    self.By,
+                    self.Bz,
+                    pos,
+                    self.dx,
+                    self.dy,
+                    self.dz,
+                    self.nx,
+                    self.ny,
+                    self.nz,
+                    self.ng,
+                )
+            except ImportError:
+                pass
         n = pos.shape[0]
         b_out = np.empty((n, 3), dtype=np.float64)
         for i in range(n):

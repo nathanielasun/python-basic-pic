@@ -41,6 +41,33 @@ def wrap_position(
     return wrapped
 
 
+def minimum_image_displacement(
+    pos_old: NDArray[np.floating],
+    pos_new: NDArray[np.floating],
+    lengths: tuple[float, float, float],
+) -> NDArray[np.float64]:
+    """Shortest periodic displacement ``pos_new - pos_old`` for each particle."""
+    old = np.asarray(pos_old, dtype=np.float64)
+    new = np.asarray(pos_new, dtype=np.float64)
+    delta = new - old
+    for axis, length in enumerate(lengths):
+        if length <= 0.0:
+            continue
+        half = 0.5 * length
+        delta[:, axis] = (delta[:, axis] + half) % length - half
+    return delta
+
+
+def unwrap_periodic_trajectory(
+    pos_old: NDArray[np.floating],
+    pos_new: NDArray[np.floating],
+    lengths: tuple[float, float, float],
+) -> NDArray[np.float64]:
+    """Endpoint positions for Esirkepov with minimum-image segment lengths."""
+    old = np.asarray(pos_old, dtype=np.float64)
+    return old + minimum_image_displacement(old, pos_new, lengths)
+
+
 def clamp_position(
     pos: NDArray[np.floating],
     lengths: tuple[float, float, float],
