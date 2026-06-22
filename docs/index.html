@@ -261,8 +261,8 @@ grid.reflect_particle(p)                       # reflecting / anode walls</div>
         <p class="module-path">src/grids/YeeGrid.py</p>
         <p>
           Staggered Yee grid for full EM PIC. Field components live on faces/edges; guard cells support
-          periodic, anode (PEC), or reflecting (PMC-style) boundaries. Not yet wired to a live EM driver
-          in <code>examples/</code> — covered by <code>tests/test_yee_grid.py</code>.
+          periodic, anode (PEC), or reflecting (PMC-style) boundaries. Live drivers:
+          <code>examples/em_01_*.py</code> … <code>em_06_*.py</code> via <code>em_common.py</code>.
         </p>
 
         <div class="panel open" id="yee-init">
@@ -271,8 +271,8 @@ grid.reflect_particle(p)                       # reflecting / anode walls</div>
             <span class="chevron">▶</span>
           </button>
           <div class="panel-body">
-            <div class="signature">YeeGrid(nx, ny, nz, dx=1, dy=1, dz=1, ng=1, boundary="periodic", eps0=1, mu0=1, anode_potential=0)</div>
-            <p>Allocates staggered <code>Ex, Ey, Ez, Bx, By, Bz, Jx, Jy, Jz, rho</code> with guard layers. Property <code>c = 1/√(μ₀ε₀)</code>.</p>
+            <div class="signature">YeeGrid(nx, ny, nz, dx=1, dy=1, dz=1, ng=1, boundary="periodic", eps0=1, mu0=1, anode_potential=0, particle_backend="numba")</div>
+            <p>Allocates staggered <code>Ex, Ey, Ez, Bx, By, Bz, Jx, Jy, Jz, rho</code> with guard layers. Property <code>c = 1/√(μ₀ε₀)</code>. <code>particle_backend</code> selects Numba parallel CIC/Esirkepov paths when periodic.</p>
             <table>
               <tr><th>boundary</th><th>Behavior</th></tr>
               <tr><td><code>periodic</code></td><td>Wrap fields in guard cells</td></tr>
@@ -306,13 +306,13 @@ grid.reflect_particle(p)                       # reflecting / anode walls</div>
           <div class="panel-body">
             <ul>
               <li><code>deposit_rho_cic(x, y, z, q)</code></li>
-              <li><code>deposit_rho_cic_batch(positions, charges)</code> — <code>(N, 3)</code> + <code>(N,)</code>; uses Numba when periodic and available</li>
-              <li><code>deposit_j_cic(x, y, z, vx, vy, vz, q)</code></li>
-              <li><code>gather_e_cic(x, y, z) -&gt; ndarray</code></li>
-              <li><code>gather_b_cic(x, y, z) -&gt; ndarray</code></li>
-              <li><code>gather_e_cic_batch(positions) -&gt; (N, 3)</code></li>
+              <li><code>deposit_rho_cic_batch(positions, charges)</code> — <code>(N, 3)</code> + <code>(N,)</code>; Numba when periodic</li>
+              <li><code>deposit_j_cic(x, y, z, vx, vy, vz, q)</code> — legacy instantaneous <code>q·v</code> deposit</li>
+              <li><code>deposit_j_esirkepov_cic_batch(pos_old, pos_new, charges)</code> — charge-conserving J (periodic; minimum-image path)</li>
+              <li><code>gather_e_cic_batch(positions) -&gt; (N, 3)</code> — staggered Yee CIC gather</li>
               <li><code>gather_b_cic_batch(positions) -&gt; (N, 3)</code></li>
-              <li><code>position_in_domain(pos)</code> — wrap or clamp per BC</li>
+              <li><code>position_in_domain_batch(positions)</code></li>
+              <li><code>particle_backend</code> property</li>
               <li><code>reflect_particle(particle)</code> — specular reflection at walls</li>
             </ul>
           </div>
@@ -593,7 +593,10 @@ F_lab   = R F_local(r_local, t)</code></pre>
             <table>
               <tr><th>Function</th><th>Description</th></tr>
               <tr><td><code>deposit_cic_periodic(rho, positions, values, dx, dy, dz, nx, ny, nz, ng, partial)</code></td><td>Thread-local CIC scatter-add into flattened ρ</td></tr>
-              <tr><td><code>gather_e_cic_periodic(Ex, Ey, Ez, positions, …) -&gt; (N, 3)</code></td><td>Trilinear E gather at grid nodes</td></tr>
+              <tr><td><code>gather_e_cic_periodic(Ex, Ey, Ez, positions, …) -&gt; (N, 3)</code></td><td>Trilinear E gather at grid nodes (electrostatic)</td></tr>
+              <tr><td><code>gather_e_yee_cic_periodic(Ex, Ey, Ez, positions, …) -&gt; (N, 3)</code></td><td>Staggered Yee E gather</td></tr>
+              <tr><td><code>gather_b_yee_cic_periodic(Bx, By, Bz, positions, …) -&gt; (N, 3)</code></td><td>Staggered Yee B gather</td></tr>
+              <tr><td><code>deposit_j_esirkepov_cic_periodic(Jx, Jy, Jz, pos_old, pos_new, charges, …, partial_j*)</code></td><td>Charge-conserving Esirkepov CIC J deposit</td></tr>
               <tr><td><code>electric_kick_b0(vel, efield, q_over_m, dt)</code></td><td>In-place <code>v += (q/m) dt E</code> (B = 0)</td></tr>
               <tr><td><code>wrap_positions_periodic(pos, lx, ly, lz)</code></td><td>In-place modulo wrap</td></tr>
               <tr><td><code>warmup_kernels()</code></td><td>JIT-compile on dummy data</td></tr>

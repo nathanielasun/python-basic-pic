@@ -45,6 +45,9 @@ If NumPy is already built and you only need PIC dependencies: `pip install -r re
 
 ## Running simulations
 
+# Note (Nate - 06/18/2026) These example files are for quick current testing and are NOT optimized
+# These are likely to be changed (or removed) in the future as common simulation handles are written
+
 Electrostatic PIC examples live under [`examples/`](examples/). Each script shares CLI flags via [`examples/common.py`](examples/common.py). Output animations go to [`animations/`](animations/) (gitignored).
 
 | Script | Physics scenario |
@@ -63,6 +66,25 @@ python examples/02_hydrogen_thermal.py --steps 100 --no-animate
 
 Flags: `--steps N`, `--seed N`, `--backend {numba,numpy}`, `--threads N`, `--no-animate`, `--frame-subsample N`, `--output-dir PATH`.
 
+### Electromagnetic (Yee grid) examples
+
+Full Maxwell PIC on [`YeeGrid`](src/grids/YeeGrid.py) with high-density (10²⁶–10²⁷ m⁻³) relativistic electrons and **Higuera–Cary** pushes (no Boris). Shared driver: [`examples/em_common.py`](examples/em_common.py).
+
+| Script | Physics scenario |
+|--------|------------------|
+| [`em_01_kr_rf_relativistic.py`](examples/em_01_kr_rf_relativistic.py) | 10 GHz RF on relativistic Kr⁺ / e⁻ |
+| [`em_02_hydrogen_relativistic_thermal.py`](examples/em_02_hydrogen_relativistic_thermal.py) | Hot H⁺ / e⁻, self-fields only |
+| [`em_03_propagating_plane_wave.py`](examples/em_03_propagating_plane_wave.py) | 800 nm E+B plane wave on plasma |
+| [`em_04_gaussian_laser_pulse.py`](examples/em_04_gaussian_laser_pulse.py) | Gaussian laser pulse + matched B |
+| [`em_05_high_density_dc_bias.py`](examples/em_05_high_density_dc_bias.py) | 10²⁷ m⁻³ plasma, DC E + guide B |
+| [`em_06_elliptical_rf.py`](examples/em_06_elliptical_rf.py) | Elliptical RF with axial guide B |
+
+```bash
+python examples/em_01_kr_rf_relativistic.py --no-animate --steps 100 --backend numba
+```
+
+EM examples use the same CLI flags as electrostatic runs (`--backend`, `--threads`, etc.). With `--backend numba`, particle ρ deposit, staggered E/B gather, Esirkepov J deposit, and Higuera–Cary push use parallel Numba kernels; FDTD field updates remain NumPy. Set `OPENBLAS_NUM_THREADS=1` when using Numba (handled automatically in the drivers).
+
 ## Documentation
 
 - **[API reference](docs/index.html)** — module docs; serve with `cd docs && python3 -m http.server 8000`
@@ -74,7 +96,7 @@ Flags: `--steps N`, `--seed N`, `--backend {numba,numpy}`, `--threads N`, `--no-
 src/                  Top-level PIC modules (Pushers, Particle, pic_animation)
   fields/             Prescribed E/B sources, wave frames, field I/O
   grids/              Electrostatic & Yee grids, CIC kernels, grid helpers
-examples/             Electrostatic PIC example drivers (01–06)
+examples/             Electrostatic (01–06) and EM Yee (em_01–em_06) drivers
 tests/                Unit tests (kernels, fields, integrator, grids)
 docs/                 API reference + OpenBLAS setup troubleshooting
 animations/           Exported MP4 output (gitignored)
