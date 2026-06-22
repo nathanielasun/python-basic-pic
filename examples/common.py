@@ -38,6 +38,82 @@ EV_TO_J = E_CHARGE
 DEFAULT_SUBSAMPLE = 2000
 ANIMATIONS_DIR = animations_dir(_ROOT)
 
+# Percent milestones treated as progress "frames" (1% … 100%).
+_PROGRESS_TOTAL_FRAMES = 100
+
+
+def _format_eta(seconds: float) -> str:
+    """Human-readable remaining wall time."""
+    if seconds < 1.0:
+        return "<1s"
+    total_sec = int(seconds + 0.5)
+    minutes, sec = divmod(total_sec, 60)
+    if minutes < 60:
+        return f"{minutes}m {sec:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes:02d}m {sec:02d}s"
+
+
+@dataclass
+class PercentProgressTracker:
+    """1% milestone reporting with ETA from running mean frame wall time."""
+
+    loop_t0: float
+    last_reported_pct: int = 0
+    total_frames: int = _PROGRESS_TOTAL_FRAMES
+    use_animation_frames: bool = False
+    _frames_recorded: int = 0
+
+    def note_animation_frame(self) -> None:
+        """Count animation frames written (used for ETA when exporting video)."""
+        self._frames_recorded += 1
+
+    def _completed_frames(self) -> int:
+        if self.use_animation_frames:
+            return self._frames_recorded
+        return self.last_reported_pct
+
+    def report(self, step: int, n_steps: int, *, dt: float, mean_vel_e: np.ndarray) -> int:
+        now = time.perf_counter()
+        elapsed = now - self.loop_t0
+        pct = (step * 100) // n_steps
+        while self.last_reported_pct < pct:
+            self.last_reported_pct += 1
+            mean_ve = float(np.mean(np.linalg.norm(mean_vel_e, axis=1)))
+            eta_suffix = ""
+            frames_done = self._completed_frames()
+            if frames_done > 0:
+                avg_frame_time = elapsed / frames_done
+                eta_seconds = avg_frame_time * self.total_frames - elapsed
+                eta_suffix = f"  ETA {_format_eta(max(0.0, eta_seconds))}"
+            print(
+                f"  {self.last_reported_pct:3d}% complete (step {step}/{n_steps})  "
+                f"t={step * dt * 1e12:.3f} ps  mean|v_e|={mean_ve:.3e} m/s{eta_suffix}"
+            )
+        return self.last_reported_pct
+
+
+def simulation_progress_frames(n_steps: int, frame_interval: int) -> int:
+    """Animation frames over a run (initial frame at t=0 plus periodic snapshots)."""
+    return 1 + n_steps // frame_interval
+
+
+def make_progress_tracker(
+    n_steps: int,
+    frame_interval: int,
+    *,
+    animating: bool,
+    loop_t0: float,
+) -> PercentProgressTracker:
+    """Build a tracker using animation frame counts when exporting video."""
+    if animating:
+        return PercentProgressTracker(
+            loop_t0=loop_t0,
+            total_frames=simulation_progress_frames(n_steps, frame_interval),
+            use_animation_frames=True,
+        )
+    return PercentProgressTracker(loop_t0=loop_t0)
+
 
 class ExternalField(Protocol):
     def at(self, pos: np.ndarray, t: float = 0.0) -> np.ndarray: ...
@@ -128,6 +204,7 @@ class ElectrostaticPICSimulation:
         self.rng = np.random.default_rng(seed)
         self.particle_backend = particle_backend
         self.frame_stream = frame_stream
+        self._progress: PercentProgressTracker | None = None
 
         c = config
         self.domain_length = c.domain_length
@@ -241,6 +318,8 @@ class ElectrostaticPICSimulation:
     def _record_frame(self, step: int, t: float) -> None:
         if self.frame_stream is not None:
             self.frame_stream.append(step, t * 1e12, self.pos_e, self.pos_i)
+            if self._progress is not None:
+                self._progress.note_animation_frame()
 
     def step(self, step_index: int) -> None:
         # E_self and E_ext both evaluated at the position time t = (n-1)*dt.
@@ -280,16 +359,25 @@ class ElectrostaticPICSimulation:
                 f"{self.n_cells}^3 grid, n={self.n_density:.2e} m^-3, "
                 f"dt={self.dt:.2e} s, {self.n_steps} steps, backend={self.grid.particle_backend}"
             )
-            self._record_frame(0, 0.0)
 
         t0 = time.perf_counter()
+        self._progress = make_progress_tracker(
+            self.n_steps,
+            self.frame_interval,
+            animating=self.frame_stream is not None,
+            loop_t0=t0,
+        )
+        if verbose:
+            self._record_frame(0, 0.0)
+
         for step in range(1, self.n_steps + 1):
             self.step(step)
-            if verbose and step % max(1, self.n_steps // 10) == 0:
-                mean_ve = float(np.mean(np.linalg.norm(self.vel_e, axis=1)))
-                print(
-                    f"  step {step:5d}/{self.n_steps}  "
-                    f"t={step * self.dt * 1e12:.3f} ps  mean|v_e|={mean_ve:.3e} m/s"
+            if verbose:
+                self._progress.report(
+                    step,
+                    self.n_steps,
+                    dt=self.dt,
+                    mean_vel_e=self.vel_e,
                 )
 
         if verbose:

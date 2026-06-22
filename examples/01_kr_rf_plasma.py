@@ -42,13 +42,13 @@ def main() -> None:
 
     config = ExampleConfig(
         name="Kr+ / e- RF plasma",
-        domain_length=1.5e-6,
-        n_cells=24,
+        domain_length=2e-6,
+        n_cells=16,
         n_density=2e20,
-        macros_per_cell=2,
+        macros_per_cell=5,
         dt=1e-14,
-        n_steps=20_000,
-        frame_interval=1000,
+        n_steps=100_000,
+        frame_interval=200,
         ion=IonSpecies("Kr+", M_KR),
         spatial_external_field=False,
     )
