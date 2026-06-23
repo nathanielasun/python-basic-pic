@@ -24,8 +24,9 @@ from typing import ClassVar, override
 import numpy as np
 from numpy.typing import NDArray
 
-from .field_frame import PolarizationKind, PolarTransformedField, WaveFrame
-from .prescribed import PrescribedField, PrescribedFieldSource, PrescribedFieldSum, Vector3Like
+from .field_frame import PolarTransformedField, WaveFrame
+from .prescribed import PrescribedField, PrescribedFieldSum
+from .types import EnvelopeWidthLike, FieldSource, PolarizationKind, Vector3Like
 
 B_COMPONENTS = ("Bx", "By", "Bz")
 
@@ -93,7 +94,7 @@ class MagneticFields(PrescribedField[MagneticFieldMode, MagneticFieldSpec, Magne
 
     @classmethod
     @override
-    def transform(cls, source: PrescribedFieldSource, frame: WaveFrame) -> PolarTransformedField:
+    def transform(cls, source: FieldSource, frame: WaveFrame) -> PolarTransformedField:
         return PolarTransformedField(source, frame)
 
     @classmethod
@@ -215,7 +216,7 @@ class MagneticFields(PrescribedField[MagneticFieldMode, MagneticFieldSpec, Magne
         k_magnitude: float | None = None,
         wavelength: float | None = None,
         center: Vector3Like | None = None,
-        width: float | Vector3Like = 1.0,
+        width: EnvelopeWidthLike = 1.0,
         phase0: float = 0.0,
         psi: float = 0.0,
         delta: float = 0.0,
@@ -243,7 +244,7 @@ class MagneticFields(PrescribedField[MagneticFieldMode, MagneticFieldSpec, Magne
         k_magnitude: float | None = None,
         wavelength: float | None = None,
         center: Vector3Like | None = None,
-        width: float | Vector3Like = 1.0,
+        width: EnvelopeWidthLike = 1.0,
         phase0: float = 0.0,
         psi: float = 0.0,
         delta: float = 0.0,
@@ -269,7 +270,7 @@ class MagneticFields(PrescribedField[MagneticFieldMode, MagneticFieldSpec, Magne
         k_magnitude: float | None = None,
         wavelength: float | None = None,
         center: Vector3Like | None = None,
-        width: float | Vector3Like = 1.0,
+        width: EnvelopeWidthLike = 1.0,
         phase0: float = 0.0,
         psi: float = 0.0,
         delta: float = 0.0,
