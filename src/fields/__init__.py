@@ -1,10 +1,16 @@
 """Prescribed E/B field sources, wave-frame geometry, and field file I/O."""
 
-from .ElectricFields import ElectricFields, ElectricFieldsSum, ElectricFieldMode, ElectricFieldSpec
+from .ElectricFields import (
+    ElectricFieldMode,
+    ElectricFields,
+    ElectricFieldSpec,
+    ElectricFieldsSum,
+    plane_wave_em_pair,
+)
 from .MagneticFields import MagneticFields, MagneticFieldsSum, MagneticFieldMode, MagneticFieldSpec
+from .prescribed import PrescribedField, PrescribedFieldSum
 from .field_frame import (
     PolarTransformedField,
-    PolarizationKind,
     TransformedField,
     WaveFrame,
     evaluate_gaussian_pulse_local,
@@ -24,6 +30,13 @@ from .field_io import (
     phase_batch,
     wave_vector,
 )
+from .types import (
+    FieldSource,
+    FieldVector,
+    PolarizationKind,
+    PrescribedFieldSource,
+    Vector3Like,
+)
 
 __all__ = (
     "ElectricFieldMode",
@@ -32,15 +45,22 @@ __all__ = (
     "ElectricFieldsSum",
     "FieldDataset",
     "FieldInterpolator",
+    "FieldSource",
+    "FieldVector",
     "MagneticFieldMode",
     "MagneticFieldSpec",
     "MagneticFields",
     "MagneticFieldsSum",
-    "PolarTransformedField",
     "PolarizationKind",
+    "PolarTransformedField",
+    "PrescribedField",
+    "PrescribedFieldSource",
+    "PrescribedFieldSum",
     "TransformedField",
+    "Vector3Like",
     "WaveFrame",
     "evaluate_gaussian_pulse_local",
+    "plane_wave_em_pair",
     "evaluate_polarized_wave_local",
     "gaussian_envelope_local",
     "load_field_csv",
