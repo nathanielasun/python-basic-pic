@@ -129,7 +129,7 @@ def _boris_push_batch(
     s = 2.0 * t_vec / (1.0 + t_sq)[:, np.newaxis]
     v_prime = v_minus + np.cross(v_minus, t_vec)
     v_plus = v_minus + np.cross(v_prime, s)
-    return v_plus + qmdt * e / 2.0
+    return np.asarray(v_plus + qmdt * e / 2.0, dtype=np.float64)
 
 
 def boris_push_batch(
@@ -340,13 +340,13 @@ def higuera_cary_push(
 
 
 try:
+    import numba
+except ImportError:
+    _has_numba_push = False
+else:
     from numba import njit, prange as _prange
 
-    _HAS_NUMBA_PUSH = True
-except ImportError:
-    _HAS_NUMBA_PUSH = False
-
-if _HAS_NUMBA_PUSH:
+    _has_numba_push = True
 
     @njit(cache=True)
     def _higuera_cary_push_proper_numba(
@@ -439,7 +439,7 @@ def higuera_cary_push_batch(
     c: float = 1.0,
 ) -> NDArray[np.float64]:
     """Batch Higuera-Cary push for ``(N, 3)`` arrays."""
-    if _HAS_NUMBA_PUSH:
+    if _has_numba_push:
         v, e, b = _as_batch_fields(vel, E, B)
         return _higuera_cary_push_batch(v, e, b, q, m, dt, c)
     return _push_batch_scalar(higuera_cary_push, vel, E, B, q, m, dt, c=c, relativistic=True)
@@ -518,3 +518,13 @@ class Pushers:
     @classmethod
     def available(cls) -> tuple[PusherKind, ...]:
         return tuple(cls._DISPATCH)
+
+    @staticmethod
+    def warmup() -> None:
+        """JIT-compile the Numba batch pushers so the first timestep is not penalized."""
+        if not _has_numba_push:
+            return
+        vel = np.zeros((2, 3), dtype=np.float64)
+        efield = np.ones((2, 3), dtype=np.float64)
+        bfield = np.zeros((2, 3), dtype=np.float64)
+        _higuera_cary_push_batch(vel, efield, bfield, -1.0, 1.0, 1e-12, 1.0)
