@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Union
+import math
 
 import numpy as np
 
@@ -61,16 +61,13 @@ class MaxwellianDriftVelocityDistribution:
     drift_direction: tuple[float, float, float] = (0.0, 0.0, 1.0)
 
 
-VelocityDistribution = Union[
-    UniformVelocityDistribution,
-    MaxwellianVelocityDistribution,
-    MaxwellianDriftVelocityDistribution,
-]
+VelocityDistribution = UniformVelocityDistribution | MaxwellianVelocityDistribution | MaxwellianDriftVelocityDistribution
+
 
 
 def maxwellian_sigma(energy_j: float, mass: float) -> float:
     """Standard deviation per axis for mean kinetic energy ``E = 3/2 m sigma^2``."""
-    return float(np.sqrt(2.0 * energy_j / (3.0 * mass)))
+    return math.sqrt(2.0 * energy_j / (3.0 * mass))
 
 
 def sample_velocities(
@@ -85,24 +82,18 @@ def sample_velocities(
         v_max = _as_vector3(distribution.v_max)
         return rng.uniform(v_min, v_max, size=(count, 3))
 
-    if isinstance(
-        distribution,
-        (MaxwellianVelocityDistribution, MaxwellianDriftVelocityDistribution),
-    ):
-        energy_j = _resolve_energy_j(
-            rng,
-            energy_j=distribution.energy_j,
-            energy_ev=distribution.energy_ev,
-            energy_ev_range=distribution.energy_ev_range,
-        )
-        sigma = maxwellian_sigma(energy_j, mass)
-        vel = rng.normal(0.0, sigma, size=(count, 3))
-        if isinstance(distribution, MaxwellianDriftVelocityDistribution):
-            direction = _as_vector3(distribution.drift_direction)
-            norm = float(np.linalg.norm(direction))
-            if norm == 0.0:
-                raise ValueError("drift_direction must be non-zero")
-            vel += (distribution.drift / norm) * direction
-        return vel
-
-    raise TypeError(f"unsupported velocity distribution: {type(distribution)!r}")
+    energy_j = _resolve_energy_j(
+        rng,
+        energy_j=distribution.energy_j,
+        energy_ev=distribution.energy_ev,
+        energy_ev_range=distribution.energy_ev_range,
+    )
+    sigma = maxwellian_sigma(energy_j, mass)
+    vel = rng.normal(0.0, sigma, size=(count, 3))
+    if isinstance(distribution, MaxwellianDriftVelocityDistribution):
+        direction = _as_vector3(distribution.drift_direction)
+        norm = float(np.linalg.norm(direction))
+        if norm == 0.0:
+            raise ValueError("drift_direction must be non-zero")
+        vel += (distribution.drift / norm) * direction
+    return vel
