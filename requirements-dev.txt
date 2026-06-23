@@ -1,0 +1,5 @@
+# Optional development/type-checking dependencies (not required at PIC runtime).
+# Install after requirements.txt:
+#   pip install -r requirements-dev.txt
+
+scipy-stubs==1.17.1.5

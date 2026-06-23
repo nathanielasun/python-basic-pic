@@ -93,9 +93,10 @@ EM examples use the same CLI flags as electrostatic runs (`--backend`, `--thread
 ## Project layout
 
 ```
-src/                  Top-level PIC modules (Pushers, Particle, pic_animation)
-  fields/             Prescribed E/B sources, wave frames, field I/O
-  grids/              Electrostatic & Yee grids, CIC kernels, grid helpers
+src/                  Top-level PIC modules (Pushers, pic_animation)
+  fields/             Prescribed E/B sources (shared PrescribedField base), wave frames, field I/O
+  grids/              Electrostatic & Yee grids (shared PICGridBase), CIC kernels, grid helpers
+  particles/          Species, velocity distributions, quasi-neutral plasma initialization
 examples/             Electrostatic (01–06) and EM Yee (em_01–em_06) drivers
 tests/                Unit tests (kernels, fields, integrator, grids)
 docs/                 API reference + OpenBLAS setup troubleshooting
