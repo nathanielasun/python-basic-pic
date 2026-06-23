@@ -17,16 +17,15 @@ Description:
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import ClassVar, cast, override
+from typing import ClassVar, override
 
 import numpy as np
 from numpy.typing import NDArray
 
 from .field_frame import PolarizationKind, PolarTransformedField, WaveFrame
-from .prescribed import PrescribedField, PrescribedFieldSource, PrescribedFieldSum
+from .prescribed import PrescribedField, PrescribedFieldSource, PrescribedFieldSum, Vector3Like
 
 B_COMPONENTS = ("Bx", "By", "Bz")
 
@@ -63,12 +62,16 @@ class MagneticFieldSpec:
     polarization_delta: float = 0.0
     mirror_scale: float = 1.0
 
+    @property
+    def scalar_amplitude(self) -> float:
+        return self.B0
+
 
 class MagneticFieldsSum(PrescribedFieldSum):
     """Superposition of multiple prescribed magnetic field sources."""
 
 
-class MagneticFields(PrescribedField):
+class MagneticFields(PrescribedField[MagneticFieldMode, MagneticFieldSpec, MagneticFieldsSum]):
     """
     Spacetime-dependent prescribed magnetic field B(r, t).
 
@@ -87,7 +90,6 @@ class MagneticFields(PrescribedField):
     _AMP_ATTR: ClassVar[str] = "B0"
     _COMPONENTS: ClassVar[tuple[str, str, str]] = B_COMPONENTS
     _DEFAULT_HDF5_GROUP: ClassVar[str] = "magnetic"
-    mode: MagneticFieldMode
 
     @classmethod
     @override
@@ -102,7 +104,7 @@ class MagneticFields(PrescribedField):
         *,
         k_magnitude: float | None = None,
         wavelength: float | None = None,
-        wavevector: Sequence[float] | NDArray[np.floating] | None = None,
+        wavevector: Vector3Like | None = None,
         phase0: float = 0.0,
         psi: float = 0.0,
     ) -> MagneticFields:
@@ -130,7 +132,7 @@ class MagneticFields(PrescribedField):
         delta: float = 0.0,
         k_magnitude: float | None = None,
         wavelength: float | None = None,
-        wavevector: Sequence[float] | NDArray[np.floating] | None = None,
+        wavevector: Vector3Like | None = None,
         phase0: float = 0.0,
     ) -> MagneticFields:
         """
@@ -172,13 +174,13 @@ class MagneticFields(PrescribedField):
         cls,
         B0: float,
         omega: float,
-        k_direction: Sequence[float] | NDArray[np.floating],
+        k_direction: Vector3Like,
         *,
-        polarization: Sequence[float] | NDArray[np.floating] | None = None,
+        polarization: Vector3Like | None = None,
         k_magnitude: float | None = None,
         wavelength: float | None = None,
         phase0: float = 0.0,
-        origin: Sequence[float] | NDArray[np.floating] | None = None,
+        origin: Vector3Like | None = None,
     ) -> PolarTransformedField:
         """Cosine plane wave rotated into the lab frame via a static ``WaveFrame``."""
         local = cls.plane_wave_local(B0, omega, k_magnitude=k_magnitude, wavelength=wavelength, phase0=phase0)
@@ -197,7 +199,7 @@ class MagneticFields(PrescribedField):
         k_magnitude: float | None = None,
         wavelength: float | None = None,
         phase0: float = 0.0,
-        origin: Sequence[float] | NDArray[np.floating] | None = None,
+        origin: Vector3Like | None = None,
     ) -> PolarTransformedField:
         """Cosine plane wave incident at spherical angles ``(theta, phi)``."""
         local = cls.plane_wave_local(B0, omega, k_magnitude=k_magnitude, wavelength=wavelength, phase0=phase0)
@@ -212,8 +214,8 @@ class MagneticFields(PrescribedField):
         *,
         k_magnitude: float | None = None,
         wavelength: float | None = None,
-        center: Sequence[float] | NDArray[np.floating] | None = None,
-        width: float | Sequence[float] | NDArray[np.floating] = 1.0,
+        center: Vector3Like | None = None,
+        width: float | Vector3Like = 1.0,
         phase0: float = 0.0,
         psi: float = 0.0,
         delta: float = 0.0,
@@ -235,17 +237,17 @@ class MagneticFields(PrescribedField):
         cls,
         B0: float,
         omega: float,
-        k_direction: Sequence[float] | NDArray[np.floating],
+        k_direction: Vector3Like,
         *,
-        polarization: Sequence[float] | NDArray[np.floating] | None = None,
+        polarization: Vector3Like | None = None,
         k_magnitude: float | None = None,
         wavelength: float | None = None,
-        center: Sequence[float] | NDArray[np.floating] | None = None,
-        width: float | Sequence[float] | NDArray[np.floating] = 1.0,
+        center: Vector3Like | None = None,
+        width: float | Vector3Like = 1.0,
         phase0: float = 0.0,
         psi: float = 0.0,
         delta: float = 0.0,
-        origin: Sequence[float] | NDArray[np.floating] | None = None,
+        origin: Vector3Like | None = None,
     ) -> PolarTransformedField:
         """Gaussian pulse rotated into the lab frame via a static ``WaveFrame``."""
         local = cls.gaussian_pulse_local(
@@ -266,12 +268,12 @@ class MagneticFields(PrescribedField):
         pol_angle: float = 0.0,
         k_magnitude: float | None = None,
         wavelength: float | None = None,
-        center: Sequence[float] | NDArray[np.floating] | None = None,
-        width: float | Sequence[float] | NDArray[np.floating] = 1.0,
+        center: Vector3Like | None = None,
+        width: float | Vector3Like = 1.0,
         phase0: float = 0.0,
         psi: float = 0.0,
         delta: float = 0.0,
-        origin: Sequence[float] | NDArray[np.floating] | None = None,
+        origin: Vector3Like | None = None,
     ) -> PolarTransformedField:
         """Gaussian pulse incident at spherical angles ``(theta, phi)``."""
         local = cls.gaussian_pulse_local(
@@ -293,9 +295,8 @@ class MagneticFields(PrescribedField):
     @override
     def _analytical_special(self, r: NDArray[np.float64], t: float) -> NDArray[np.float64] | None:
         if self.mode == MagneticFieldMode.MIRROR:
-            spec = cast(MagneticFieldSpec, self.spec)
-            z = cast(float, r[2])
-            bz: float = spec.B0 * (1.0 + (z / spec.mirror_scale) ** 2)
+            z = r.item(2)
+            bz = self.spec.B0 * (1.0 + (z / self.spec.mirror_scale) ** 2)
             return np.array([0.0, 0.0, bz], dtype=np.float64)
         return None
 
@@ -304,8 +305,7 @@ class MagneticFields(PrescribedField):
         self, pos: NDArray[np.float64], t: float
     ) -> NDArray[np.float64] | None:
         if self.mode == MagneticFieldMode.MIRROR:
-            spec = cast(MagneticFieldSpec, self.spec)
             out = np.zeros((pos.shape[0], 3), dtype=np.float64)
-            out[:, 2] = spec.B0 * (1.0 + (pos[:, 2] / spec.mirror_scale) ** 2)
+            out[:, 2] = self.spec.B0 * (1.0 + (pos[:, 2] / self.spec.mirror_scale) ** 2)
             return out
         return None
