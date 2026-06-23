@@ -6,9 +6,14 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
+from typing import TYPE_CHECKING, Any, cast
 
 import h5py
 import numpy as np
+
+if TYPE_CHECKING:
+    from mpl_toolkits.mplot3d.art3d import Path3DCollection
+    from mpl_toolkits.mplot3d.axes3d import Axes3D
 
 ANIMATIONS_DIR_NAME = "animations"
 
@@ -114,16 +119,49 @@ class FrameStreamWriter:
         return self._n_frames
 
 
+def _require_dataset(file: h5py.File, name: str) -> h5py.Dataset:
+    obj = file[name]
+    if not isinstance(obj, h5py.Dataset):
+        raise TypeError(f"expected HDF5 dataset {name!r}, got {type(obj).__name__}")
+    return obj
+
+
+def _read_dataset_int(dataset: h5py.Dataset, index: int) -> int:
+    value = np.empty((), dtype=np.int64)
+    dataset.read_direct(value, np.s_[index])
+    return int(value.item())
+
+
+def _read_dataset_float(dataset: h5py.Dataset, index: int) -> float:
+    value = np.empty((), dtype=np.float64)
+    dataset.read_direct(value, np.s_[index])
+    return float(value.item())
+
+
+def _read_dataset_row(dataset: h5py.Dataset, index: int) -> np.ndarray:
+    n_sub = int(dataset.shape[1])
+    n_dim = int(dataset.shape[2])
+    row = np.empty((n_sub, n_dim), dtype=np.float64)
+    dataset.read_direct(row, np.s_[index, :, :])
+    return row
+
+
 class FrameStreamReader:
     """Read animation frames one at a time from HDF5."""
+
+    _file: h5py.File
+    _steps: h5py.Dataset
+    _times_ps: h5py.Dataset
+    _electrons: h5py.Dataset
+    _ions: h5py.Dataset
 
     def __init__(self, path: Path) -> None:
         self.path = path
         self._file = h5py.File(self.path, "r")
-        self._steps = self._file["steps"]
-        self._times_ps = self._file["times_ps"]
-        self._electrons = self._file["electrons_um"]
-        self._ions = self._file["ions_um"]
+        self._steps = _require_dataset(self._file, "steps")
+        self._times_ps = _require_dataset(self._file, "times_ps")
+        self._electrons = _require_dataset(self._file, "electrons_um")
+        self._ions = _require_dataset(self._file, "ions_um")
 
     def __enter__(self) -> FrameStreamReader:
         return self
@@ -145,14 +183,32 @@ class FrameStreamReader:
 
     def read_frame(self, index: int) -> FrameRecord:
         return FrameRecord(
-            step=int(self._steps[index]),
-            time_ps=float(self._times_ps[index]),
-            electrons_um=np.asarray(self._electrons[index], dtype=np.float64),
-            ions_um=np.asarray(self._ions[index], dtype=np.float64),
+            step=_read_dataset_int(self._steps, index),
+            time_ps=_read_dataset_float(self._times_ps, index),
+            electrons_um=_read_dataset_row(self._electrons, index),
+            ions_um=_read_dataset_row(self._ions, index),
         )
 
 
-def _draw_domain_box(ax: object, length_um: float) -> None:
+def _scatter3d(ax: Axes3D, positions: np.ndarray, **kwargs: Any) -> Path3DCollection:
+    coords = np.asarray(positions, dtype=np.float64)
+    return cast(
+        Any,
+        ax.scatter(
+            cast(Any, coords[:, 0]),
+            cast(Any, coords[:, 1]),
+            cast(Any, coords[:, 2]),
+            **kwargs,
+        ),
+    )
+
+
+def _update_scatter3d(scatter: Path3DCollection, positions: np.ndarray) -> None:
+    coords = np.asarray(positions, dtype=np.float64)
+    scatter._offsets3d = (coords[:, 0], coords[:, 1], coords[:, 2])
+
+
+def _draw_domain_box(ax: Axes3D, length_um: float) -> None:
     L = length_um
     edges = [
         ([0, L], [0, 0], [0, 0]),
@@ -181,27 +237,29 @@ def build_animation(
 ):
     import matplotlib.pyplot as plt
     from matplotlib.animation import FuncAnimation
+    from mpl_toolkits.mplot3d.axes3d import Axes3D
 
     owned_reader = isinstance(frames, Path)
     reader = FrameStreamReader(frames) if owned_reader else frames
 
     frame0 = reader.read_frame(0)
     fig = plt.figure(figsize=(8, 7))
-    ax = fig.add_subplot(111, projection="3d")
+    ax_candidate = fig.add_subplot(111, projection="3d")
+    if not isinstance(ax_candidate, Axes3D):
+        raise TypeError("expected 3D axes")
+    ax = ax_candidate
 
-    sc_e = ax.scatter(
-        frame0.electrons_um[:, 0],
-        frame0.electrons_um[:, 1],
-        frame0.electrons_um[:, 2],
+    sc_e = _scatter3d(
+        ax,
+        frame0.electrons_um,
         c="tab:blue",
         s=4,
         alpha=0.5,
         label="e-",
     )
-    sc_i = ax.scatter(
-        frame0.ions_um[:, 0],
-        frame0.ions_um[:, 1],
-        frame0.ions_um[:, 2],
+    sc_i = _scatter3d(
+        ax,
+        frame0.ions_um,
         c="tab:red",
         s=6,
         alpha=0.6,
@@ -219,16 +277,8 @@ def build_animation(
 
     def update(frame: int) -> tuple:
         record = reader.read_frame(frame)
-        sc_e._offsets3d = (
-            record.electrons_um[:, 0],
-            record.electrons_um[:, 1],
-            record.electrons_um[:, 2],
-        )
-        sc_i._offsets3d = (
-            record.ions_um[:, 0],
-            record.ions_um[:, 1],
-            record.ions_um[:, 2],
-        )
+        _update_scatter3d(sc_e, record.electrons_um)
+        _update_scatter3d(sc_i, record.ions_um)
         title.set_text(f"step {record.step}  t = {record.time_ps:.4f} ps")
         return sc_e, sc_i, title
 
