@@ -16,17 +16,15 @@ wave phase ``omega * t`` and polarization parameters.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from enum import StrEnum
 import math
 from pathlib import Path
-from typing import ClassVar, Generic, Literal, Protocol, Self, TypeVar, cast
+from typing import ClassVar, Generic, Self, TypeVar, cast
 
 import numpy as np
 from numpy.typing import NDArray
 
 from .field_frame import (
-    PolarizationKind,
     PolarTransformedField,
     WaveFrame,
     elliptical_components,
@@ -44,59 +42,24 @@ from .field_io import (
     phase,
     phase_batch,
 )
-
-Vector3Like = Sequence[float] | NDArray[np.floating]
-Position = NDArray[np.floating]
-Positions = NDArray[np.floating]
-FieldVector = NDArray[np.float64]
-FieldBatch = NDArray[np.float64]
-
-Waveform = Literal["sin", "cos"]
-SharedModeName = Literal[
-    "ZERO",
-    "UNIFORM",
-    "SINUSOIDAL",
-    "SINUSOIDAL_LINEAR",
-    "SINUSOIDAL_ELLIPTICAL",
-    "PLANE_WAVE",
-    "GAUSSIAN_PULSE",
-    "LINEAR_RAMP",
-    "FILE",
-]
-
-_AXIS_INDEX: dict[Literal["x", "y", "z"], int] = {"x": 0, "y": 1, "z": 2}
+from .types import (
+    AXIS_INDEX,
+    AxisName,
+    FieldBatch,
+    FieldSource,
+    FieldVector,
+    PolarizationKind,
+    Positions,
+    Position,
+    PrescribedFieldSpec,
+    SharedModeName,
+    Vector3Like,
+    Waveform,
+)
 
 ModeT = TypeVar("ModeT", bound=StrEnum)
-SpecT = TypeVar("SpecT", bound="PrescribedFieldSpec")
+SpecT = TypeVar("SpecT", bound=PrescribedFieldSpec)
 SumT = TypeVar("SumT", bound="PrescribedFieldSum")
-
-
-class PrescribedFieldSpec(Protocol):
-    """Shared analytical parameters for electric and magnetic field specs."""
-
-    amplitude: NDArray[np.float64]
-    offset: NDArray[np.float64]
-    wavevector: NDArray[np.float64]
-    omega: float
-    phase0: float
-    envelope_center: NDArray[np.float64]
-    envelope_width: NDArray[np.float64]
-    ramp_axis: int
-    ramp_rate: float
-    polarization_kind: PolarizationKind
-    polarization_psi: float
-    polarization_delta: float
-
-    @property
-    def scalar_amplitude(self) -> float: ...
-
-
-class PrescribedFieldSource(Protocol):
-    """Minimal interface for field sources combined in :class:`PrescribedFieldSum`."""
-
-    def at(self, pos: Position, t: float = 0.0) -> FieldVector: ...
-
-    def at_batch(self, positions: Positions, t: float = 0.0) -> FieldBatch: ...
 
 
 class PrescribedField(Generic[ModeT, SpecT, SumT]):
@@ -210,18 +173,18 @@ class PrescribedField(Generic[ModeT, SpecT, SumT]):
     def linear_ramp(
         cls,
         ramp_rate: float,
-        axis: Literal["x", "y", "z"] = "z",
+        axis: AxisName = "z",
         offset: Vector3Like | None = None,
     ) -> Self:
         spec = cls._build_spec(
             ramp_rate=ramp_rate,
-            ramp_axis=_AXIS_INDEX[axis],
+            ramp_axis=AXIS_INDEX[axis],
             offset=np.asarray(offset if offset is not None else [0.0, 0.0, 0.0]),
         )
         return cls(cls._mode("LINEAR_RAMP"), spec)
 
     @classmethod
-    def transform(cls, source: PrescribedFieldSource, frame: WaveFrame) -> PolarTransformedField:
+    def transform(cls, source: FieldSource, frame: WaveFrame) -> PolarTransformedField:
         """
         Apply a static polar transform from the local source frame to the lab frame.
 
@@ -356,7 +319,7 @@ class PrescribedField(Generic[ModeT, SpecT, SumT]):
         shape = xx.shape
         return batch[:, 0].reshape(shape), batch[:, 1].reshape(shape), batch[:, 2].reshape(shape)
 
-    def __add__(self, other: PrescribedFieldSource) -> SumT:
+    def __add__(self, other: FieldSource) -> SumT:
         return cast(SumT, self._SUM([self, other]))
 
     def _wave_phase(self, pos: Position, t: float, spec: SpecT) -> float:
@@ -512,9 +475,9 @@ class PrescribedField(Generic[ModeT, SpecT, SumT]):
 class PrescribedFieldSum:
     """Superposition of prescribed and/or polar-transformed field sources."""
 
-    sources: list[PrescribedFieldSource]
+    sources: list[FieldSource]
 
-    def __init__(self, sources: list[PrescribedFieldSource]) -> None:
+    def __init__(self, sources: list[FieldSource]) -> None:
         self.sources = list(sources)
 
     def at(self, pos: Position, t: float = 0.0) -> FieldVector:
@@ -530,5 +493,5 @@ class PrescribedFieldSum:
             total += source.at_batch(pos, t)
         return total
 
-    def __add__(self, other: PrescribedFieldSource) -> Self:
+    def __add__(self, other: FieldSource) -> Self:
         return type(self)([*self.sources, other])

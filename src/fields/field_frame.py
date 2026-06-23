@@ -20,27 +20,34 @@ Typical workflow::
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import dataclass
-from enum import StrEnum
-from typing import Literal
+import math
+from typing import cast, final
 
 import numpy as np
 from numpy.typing import NDArray
 
-
-class PolarizationKind(StrEnum):
-    """Transverse polarization state for sinusoidal wave factories."""
-
-    LINEAR = "linear"
-    ELLIPTICAL = "elliptical"
+from .types import (
+    EnvelopeWidthLike,
+    FieldBatch,
+    FieldSource,
+    FieldSourceFactory,
+    FieldSourceSum,
+    FieldVector,
+    PolarizationKind,
+    Position,
+    Positions,
+    Vec3,
+    Vector3Like,
+    Waveform,
+)
 
 
 def normalize_vector(
-    vector: Sequence[float] | NDArray[np.floating],
+    vector: Vector3Like,
     *,
     name: str = "vector",
-) -> NDArray[np.float64]:
+) -> Vec3:
     arr = np.asarray(vector, dtype=np.float64)
     if arr.shape != (3,):
         raise ValueError(f"{name} must have shape (3,)")
@@ -50,23 +57,57 @@ def normalize_vector(
     return arr / norm
 
 
-def direction_from_spherical(theta: float, phi: float) -> NDArray[np.float64]:
+def _dot3(a: Vec3, b: Vec3) -> float:
+    return a.item(0) * b.item(0) + a.item(1) * b.item(1) + a.item(2) * b.item(2)
+
+
+def _reject_parallel(v: Vec3, axis: Vec3) -> Vec3:
+    """Return the component of ``v`` orthogonal to ``axis``."""
+    scale = _dot3(v, axis)
+    return np.array(
+        [
+            v.item(0) - scale * axis.item(0),
+            v.item(1) - scale * axis.item(1),
+            v.item(2) - scale * axis.item(2),
+        ],
+        dtype=np.float64,
+    )
+
+
+def _combine3(
+    a: Vec3,
+    b: Vec3,
+    scale_a: float,
+    scale_b: float,
+) -> Vec3:
+    """Return ``scale_a * a + scale_b * b`` for fixed 3-vectors."""
+    return np.array(
+        [
+            scale_a * a.item(0) + scale_b * b.item(0),
+            scale_a * a.item(1) + scale_b * b.item(1),
+            scale_a * a.item(2) + scale_b * b.item(2),
+        ],
+        dtype=np.float64,
+    )
+
+
+def direction_from_spherical(theta: float, phi: float) -> Vec3:
     """
     Unit propagation direction from spherical angles.
 
     ``theta`` is polar angle from +z (colatitude), ``phi`` is azimuth in the xy-plane.
     """
-    sin_theta = np.sin(theta)
+    sin_theta = math.sin(theta)
     return np.array(
-        [sin_theta * np.cos(phi), sin_theta * np.sin(phi), np.cos(theta)],
+        [sin_theta * math.cos(phi), sin_theta * math.sin(phi), math.cos(theta)],
         dtype=np.float64,
     )
 
 
 def transverse_basis(
-    k_hat: NDArray[np.float64],
-    polarization: Sequence[float] | NDArray[np.floating] | None = None,
-) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    k_hat: Vec3,
+    polarization: Vector3Like | None = None,
+) -> tuple[Vec3, Vec3]:
     """
     Build an orthonormal transverse pair (e1, e2) with e1 x e2 = k_hat.
 
@@ -75,12 +116,12 @@ def transverse_basis(
     """
     if polarization is None:
         reference = np.array([1.0, 0.0, 0.0], dtype=np.float64)
-        if abs(float(np.dot(reference, k_hat))) > 0.9:
+        if abs(_dot3(reference, k_hat)) > 0.9:
             reference = np.array([0.0, 1.0, 0.0], dtype=np.float64)
-        e1 = reference - np.dot(reference, k_hat) * k_hat
+        e1 = _reject_parallel(reference, k_hat)
     else:
         pol = np.asarray(polarization, dtype=np.float64)
-        e1 = pol - np.dot(pol, k_hat) * k_hat
+        e1 = _reject_parallel(pol, k_hat)
 
     e1_norm = float(np.linalg.norm(e1))
     if e1_norm <= 1e-30:
@@ -106,10 +147,9 @@ def elliptical_components(
     with constant magnitude ``E0``.
     """
     if delta == 0.0:
-        scalar = np.sin(phi)
-        return np.cos(psi) * scalar, np.sin(psi) * scalar
-    ratio = np.tan(psi)
-    return np.sin(phi), ratio * np.sin(phi + delta)
+        scalar = math.sin(phi)
+        return math.cos(psi) * scalar, math.sin(psi) * scalar
+    return math.sin(phi), math.tan(psi) * math.sin(phi + delta)
 
 
 def elliptical_components_cos(
@@ -120,15 +160,14 @@ def elliptical_components_cos(
 ) -> tuple[float, float]:
     """Cosine-carrier counterpart to :func:`elliptical_components`."""
     if delta == 0.0:
-        scalar = np.cos(phi)
-        return np.cos(psi) * scalar, np.sin(psi) * scalar
-    ratio = np.tan(psi)
-    return np.cos(phi), ratio * np.cos(phi + delta)
+        scalar = math.cos(phi)
+        return math.cos(psi) * scalar, math.sin(psi) * scalar
+    return math.cos(phi), math.tan(psi) * math.cos(phi + delta)
 
 
 def resolve_k_magnitude(
     *,
-    wavevector: NDArray[np.float64] | None = None,
+    wavevector: Vec3 | None = None,
     k_magnitude: float | None = None,
     wavelength: float | None = None,
 ) -> float:
@@ -143,7 +182,7 @@ def resolve_k_magnitude(
     raise ValueError("one of wavevector, k_magnitude, or wavelength is required")
 
 
-def local_wavevector(k_magnitude: float) -> NDArray[np.float64]:
+def local_wavevector(k_magnitude: float) -> Vec3:
     return np.array([0.0, 0.0, k_magnitude], dtype=np.float64)
 
 
@@ -154,13 +193,13 @@ def evaluate_polarized_wave_local(
     polarization_kind: PolarizationKind,
     psi: float = 0.0,
     delta: float = 0.0,
-    waveform: Literal["sin", "cos"] = "sin",
-) -> NDArray[np.float64]:
+    waveform: Waveform = "sin",
+) -> FieldVector:
     """Return transverse wave components [Fx, Fy, 0] in the local source frame."""
     if polarization_kind == PolarizationKind.LINEAR:
-        carrier = np.sin(phi) if waveform == "sin" else np.cos(phi)
-        a1 = np.cos(psi) * carrier
-        a2 = np.sin(psi) * carrier
+        carrier = math.sin(phi) if waveform == "sin" else math.cos(phi)
+        a1 = math.cos(psi) * carrier
+        a2 = math.sin(psi) * carrier
         return np.array([amplitude * a1, amplitude * a2, 0.0], dtype=np.float64)
 
     if waveform == "sin":
@@ -171,8 +210,8 @@ def evaluate_polarized_wave_local(
 
 
 def normalize_envelope_width(
-    width: float | Sequence[float] | NDArray[np.floating],
-) -> NDArray[np.float64]:
+    width: EnvelopeWidthLike,
+) -> Vec3:
     """Broadcast a scalar or length-3 width to a positive ``(3,)`` envelope scale."""
     if isinstance(width, (int, float, np.floating)):
         scale = float(width)
@@ -194,29 +233,32 @@ def normalize_envelope_width(
 
 
 def gaussian_envelope_local(
-    r_local: Sequence[float] | NDArray[np.floating],
-    center: NDArray[np.float64],
-    width: NDArray[np.float64],
+    r_local: Vector3Like,
+    center: Vec3,
+    width: Vec3,
 ) -> float:
     """Axis-aligned Gaussian envelope evaluated in the local source frame."""
     r = np.asarray(r_local, dtype=np.float64)
-    return float(np.exp(-np.sum(((r - center) / width) ** 2)))
+    envelope_arg = -sum(
+        ((r.item(i) - center.item(i)) / width.item(i)) ** 2 for i in range(3)
+    )
+    return math.exp(envelope_arg)
 
 
 def evaluate_gaussian_pulse_local(
-    r: Sequence[float] | NDArray[np.floating],
+    r: Vector3Like,
     t: float,
     *,
     amplitude: float,
     omega: float,
-    wavevector: NDArray[np.float64],
-    center: NDArray[np.float64],
-    width: NDArray[np.float64],
+    wavevector: Vec3,
+    center: Vec3,
+    width: Vec3,
     phase0: float = 0.0,
     polarization_kind: PolarizationKind = PolarizationKind.LINEAR,
     psi: float = 0.0,
     delta: float = 0.0,
-) -> NDArray[np.float64]:
+) -> FieldVector:
     """
     Gaussian-enveloped cosine pulse in the local source frame (+z propagation).
 
@@ -251,31 +293,31 @@ class WaveFrame:
     rotations; use elliptical polarization parameters on the source instead.
     """
 
-    origin: NDArray[np.float64]
+    origin: Vec3
     lab_from_local: NDArray[np.float64]
 
     @property
-    def e1(self) -> NDArray[np.float64]:
+    def e1(self) -> Vec3:
         """First transverse basis vector (local x / polarization reference) in lab coords."""
         return self.lab_from_local[:, 0].copy()
 
     @property
-    def e2(self) -> NDArray[np.float64]:
+    def e2(self) -> Vec3:
         """Second transverse basis vector (local y) in lab coords; e1 x e2 = k_hat."""
         return self.lab_from_local[:, 1].copy()
 
     @property
-    def k_hat(self) -> NDArray[np.float64]:
+    def k_hat(self) -> Vec3:
         """Unit propagation direction (local +z) expressed in lab coordinates."""
         return self.lab_from_local[:, 2].copy()
 
     @classmethod
     def from_basis(
         cls,
-        k_direction: Sequence[float] | NDArray[np.floating],
+        k_direction: Vector3Like,
         *,
-        polarization: Sequence[float] | NDArray[np.floating] | None = None,
-        origin: Sequence[float] | NDArray[np.floating] | None = None,
+        polarization: Vector3Like | None = None,
+        origin: Vector3Like | None = None,
     ) -> WaveFrame:
         """
         Build a frame from an explicit propagation direction in lab coordinates.
@@ -304,7 +346,7 @@ class WaveFrame:
         phi: float,
         *,
         pol_angle: float = 0.0,
-        origin: Sequence[float] | NDArray[np.floating] | None = None,
+        origin: Vector3Like | None = None,
     ) -> WaveFrame:
         """
         Build a static frame from spherical incidence angles into the PIC cube.
@@ -313,11 +355,16 @@ class WaveFrame:
         is a fixed rotation of the local x-axis (e1) about ``k_hat``.
         """
         k_hat = direction_from_spherical(theta, phi)
-        e1, e2 = transverse_basis(k_hat, polarization=None)
+        e1_basis, e2_basis = transverse_basis(k_hat, polarization=None)
+        e1: Vec3
+        e2: Vec3
         if pol_angle != 0.0:
-            e1_rot = np.cos(pol_angle) * e1 + np.sin(pol_angle) * e2
-            e2_rot = -np.sin(pol_angle) * e1 + np.cos(pol_angle) * e2
-            e1, e2 = e1_rot, e2_rot
+            c = math.cos(pol_angle)
+            s = math.sin(pol_angle)
+            e1 = _combine3(e1_basis, e2_basis, c, s)
+            e2 = _combine3(e1_basis, e2_basis, -s, c)
+        else:
+            e1, e2 = e1_basis, e2_basis
         origin_arr = (
             np.zeros(3, dtype=np.float64)
             if origin is None
@@ -326,7 +373,7 @@ class WaveFrame:
         return cls(origin=origin_arr, lab_from_local=np.column_stack([e1, e2, k_hat]))
 
     @classmethod
-    def identity(cls, origin: Sequence[float] | NDArray[np.floating] | None = None) -> WaveFrame:
+    def identity(cls, origin: Vector3Like | None = None) -> WaveFrame:
         """
         Lab-aligned frame: local axes coincide with simulation x, y, z.
 
@@ -340,31 +387,33 @@ class WaveFrame:
         )
         return cls(origin=origin_arr, lab_from_local=np.eye(3, dtype=np.float64))
 
-    def position_to_local(self, position_lab: Sequence[float] | NDArray[np.floating]) -> NDArray[np.float64]:
+    def position_to_local(self, position_lab: Vector3Like) -> Vec3:
         """Map a lab-frame position to local coordinates: r_local = R^T (r_lab - origin)."""
         r_lab = np.asarray(position_lab, dtype=np.float64)
-        return self.lab_from_local.T @ (r_lab - self.origin)
+        return np.asarray(self.lab_from_local.T @ (r_lab - self.origin), dtype=np.float64)
 
-    def position_to_lab(self, position_local: Sequence[float] | NDArray[np.floating]) -> NDArray[np.float64]:
+    def position_to_lab(self, position_local: Vector3Like) -> Vec3:
         """Map a local position back to the lab frame: r_lab = origin + R r_local."""
         r_local = np.asarray(position_local, dtype=np.float64)
         return self.origin + self.lab_from_local @ r_local
 
-    def vector_to_lab(self, vector_local: Sequence[float] | NDArray[np.floating]) -> NDArray[np.float64]:
+    def vector_to_lab(self, vector_local: Vector3Like) -> Vec3:
         """Rotate a vector from local to lab components (ignores ``origin``)."""
         v_local = np.asarray(vector_local, dtype=np.float64)
         return self.lab_from_local @ v_local
 
-    def vector_to_local(self, vector_lab: Sequence[float] | NDArray[np.floating]) -> NDArray[np.float64]:
+    def vector_to_local(self, vector_lab: Vector3Like) -> Vec3:
         """Rotate a vector from lab to local components (ignores ``origin``)."""
         v_lab = np.asarray(vector_lab, dtype=np.float64)
         return self.lab_from_local.T @ v_lab
 
-    def wavevector_lab(self, k_magnitude: float) -> NDArray[np.float64]:
+    def wavevector_lab(self, k_magnitude: float) -> Vec3:
         """Return the lab-frame wavevector k = |k| k_hat for a local +z source."""
         return k_magnitude * self.k_hat
 
 
+@final
+@dataclass
 class PolarTransformedField:
     """
     Polar transform wrapper: map a locally-authored field into the PIC lab frame.
@@ -375,23 +424,16 @@ class PolarTransformedField:
     ``R`` is fixed for the life of the wrapper; it does not depend on time.
     """
 
-    def __init__(self, source: object, frame: WaveFrame) -> None:
-        """
-        Wrap a locally-authored ``ElectricFields`` / ``MagneticFields`` source.
+    source: FieldSource
+    frame: WaveFrame
 
-        ``source`` is evaluated in the wave frame; results are rotated into the
-        PIC lab frame for particle gather or diagnostics.
-        """
-        self.source = source
-        self.frame = frame
-
-    def at(self, pos: NDArray[np.floating], t: float = 0.0) -> NDArray[np.float64]:
+    def at(self, pos: Position, t: float = 0.0) -> FieldVector:
         """Evaluate the rotated field at one lab-frame position and time."""
         r_local = self.frame.position_to_local(pos)
-        field_local = self.source.at(r_local, t)
+        field_local: FieldVector = self.source.at(r_local, t)
         return self.frame.vector_to_lab(field_local)
 
-    def at_batch(self, positions: NDArray[np.floating], t: float = 0.0) -> NDArray[np.float64]:
+    def at_batch(self, positions: Positions, t: float = 0.0) -> FieldBatch:
         """
         Vectorized lab-frame evaluation for ``(N, 3)`` particle positions.
 
@@ -402,55 +444,50 @@ class PolarTransformedField:
         pos = np.asarray(positions, dtype=np.float64)
         if pos.ndim != 2 or pos.shape[1] != 3:
             raise ValueError("positions must have shape (N, 3)")
-        r_local = (pos - self.frame.origin) @ self.frame.lab_from_local
-        if hasattr(self.source, "at_batch"):
-            field_local = self.source.at_batch(r_local, t)
-        else:
-            n = pos.shape[0]
-            field_local = np.empty((n, 3), dtype=np.float64)
-            for i in range(n):
-                field_local[i] = self.source.at(r_local[i], t)
-        return field_local @ self.frame.lab_from_local.T
+        r_local = np.asarray((pos - self.frame.origin) @ self.frame.lab_from_local, dtype=np.float64)
+        field_local: FieldBatch = self.source.at_batch(r_local, t)
+        return np.asarray(field_local @ self.frame.lab_from_local.T, dtype=np.float64)
 
-    def __add__(self, other: object) -> object:
+    def __add__(self, other: FieldSource) -> FieldSource:
         """Superpose with another prescribed field; defers to typed sum helpers."""
-        from .ElectricFields import ElectricFields, ElectricFieldsSum
-        from .MagneticFields import MagneticFields, MagneticFieldsSum
-
-        if isinstance(other, (ElectricFields, ElectricFieldsSum)):
-            return ElectricFieldsSum([self, other])
-        if isinstance(other, (MagneticFields, MagneticFieldsSum)):
-            return MagneticFieldsSum([self, other])
+        sum_type = getattr(type(other), "_SUM", None)
+        if sum_type is not None:
+            factory = cast(FieldSourceFactory, sum_type)
+            return factory([self, other])
+        if isinstance(other, FieldSourceSum):
+            constructor = cast(FieldSourceFactory, type(other))
+            return constructor([self, other])
         return TransformedFieldSum([self, other])
 
 
+@final
+@dataclass
 class TransformedFieldSum:
     """Superposition of polar-transformed and/or native prescribed field sources."""
 
-    def __init__(self, sources: list[object]) -> None:
-        """Collect one or more native or transformed field sources."""
-        self.sources = sources
+    sources: list[FieldSource]
 
-    def at(self, pos: NDArray[np.floating], t: float = 0.0) -> NDArray[np.float64]:
+    def __post_init__(self) -> None:
+        self.sources = [source for source in self.sources]
+
+    def at(self, pos: Position, t: float = 0.0) -> FieldVector:
         """Sum ``source.at(pos, t)`` over all wrapped sources."""
-        total = np.zeros(3, dtype=np.float64)
+        total: FieldVector = np.zeros(3, dtype=np.float64)
         for source in self.sources:
-            total += source.at(pos, t)
+            field: FieldVector = source.at(pos, t)
+            total += field
         return total
 
-    def at_batch(self, positions: NDArray[np.floating], t: float = 0.0) -> NDArray[np.float64]:
+    def at_batch(self, positions: Positions, t: float = 0.0) -> FieldBatch:
         """Sum batched evaluations over all wrapped sources; returns ``(N, 3)``."""
         pos = np.asarray(positions, dtype=np.float64)
-        total = np.zeros((pos.shape[0], 3), dtype=np.float64)
+        total: FieldBatch = np.zeros((pos.shape[0], 3), dtype=np.float64)
         for source in self.sources:
-            if hasattr(source, "at_batch"):
-                total += source.at_batch(pos, t)
-            else:
-                for i in range(pos.shape[0]):
-                    total[i] += source.at(pos[i], t)
+            field: FieldBatch = source.at_batch(pos, t)
+            total += field
         return total
 
-    def __add__(self, other: object) -> TransformedFieldSum:
+    def __add__(self, other: FieldSource) -> TransformedFieldSum:
         """Append another source and return a new sum."""
         return TransformedFieldSum([*self.sources, other])
 
