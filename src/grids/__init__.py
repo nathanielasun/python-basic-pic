@@ -1,8 +1,16 @@
 """PIC field grids, shared geometry helpers, and Numba particle kernels."""
 
-from .ElectrostaticGrid import ElectrostaticGrid, ParticleBackend
+from .base import PICGridBase
+from .ElectrostaticGrid import ElectrostaticGrid
 from .YeeGrid import YeeGrid
-from .grid_common import clamp_position, periodic_along_axis, periodic_field, wrap_position
+from .grid_common import (
+    BoundaryKind,
+    ParticleBackend,
+    clamp_position,
+    periodic_along_axis,
+    periodic_field,
+    wrap_position,
+)
 from .pic_kernels import HAS_NUMBA, warmup_kernels
 
 try:
@@ -33,8 +41,10 @@ except ImportError:
         pos[:, 2] %= lz
 
 __all__ = (
+    "BoundaryKind",
     "ElectrostaticGrid",
     "HAS_NUMBA",
+    "PICGridBase",
     "ParticleBackend",
     "YeeGrid",
     "clamp_position",

@@ -1,9 +1,15 @@
-"""Shared grid geometry helpers for electrostatic and Yee PIC grids."""
+"""Shared grid geometry helpers and type aliases for electrostatic and Yee PIC grids."""
 
 from __future__ import annotations
 
+from typing import Literal
+
 import numpy as np
 from numpy.typing import NDArray
+
+# Selectable wall conditions and particle-operation backend, shared by every grid.
+BoundaryKind = Literal["periodic", "anode", "reflecting"]
+ParticleBackend = Literal["numpy", "numba"]
 
 
 def periodic_along_axis(field: NDArray[np.floating], axis: int, ng: int) -> None:

@@ -21,26 +21,20 @@ Description:
       - periodic: guard cells copy opposite face (default)
       - anode: PEC walls (tangential E = 0, normal B = 0)
       - reflecting: PMC-style walls (normal E = 0, tangential B = 0) plus
-        specular particle reflection via reflect_particle()
+        specular particle reflection via reflect_position_velocity()
 
     Physical domain: x in [0, Lx), y in [0, Ly), z in [0, Lz) with L = n * d.
 """
 
 from __future__ import annotations
 
-from typing import Literal, TYPE_CHECKING
-
 import numpy as np
 from numpy.typing import NDArray
 
-if TYPE_CHECKING:
-    from Particle import Particle
-
-BoundaryKind = Literal["periodic", "anode", "reflecting"]
-
-from .grid_common import periodic_along_axis as _periodic_along_axis
+from .base import PICGridBase
+from .grid_common import BoundaryKind, ParticleBackend
 from .grid_common import periodic_field as _periodic_field
-from .ElectrostaticGrid import ParticleBackend
+
 
 def _shape_ex(nx: int, ny: int, nz: int, ng: int) -> tuple[int, int, int]:
     return nx + 1 + 2 * ng, ny + 2 * ng, nz + 2 * ng
@@ -70,7 +64,7 @@ def _shape_rho(nx: int, ny: int, nz: int, ng: int) -> tuple[int, int, int]:
     return nx + 2 * ng, ny + 2 * ng, nz + 2 * ng
 
 
-class YeeGrid:
+class YeeGrid(PICGridBase):
     """3D Yee staggered grid with explicit FDTD updates and selectable wall BCs."""
 
     def __init__(
@@ -88,29 +82,9 @@ class YeeGrid:
         anode_potential: float = 0.0,
         particle_backend: ParticleBackend = "numba",
     ) -> None:
-        if nx < 1 or ny < 1 or nz < 1:
-            raise ValueError("nx, ny, nz must be positive")
-        if ng < 1:
-            raise ValueError("ng must be at least 1 for guard cells")
-        if boundary not in ("periodic", "anode", "reflecting"):
-            raise ValueError(f"unsupported boundary condition: {boundary!r}")
-
-        self.nx = nx
-        self.ny = ny
-        self.nz = nz
-        self.dx = dx
-        self.dy = dy
-        self.dz = dz
-        self.ng = ng
-        self.boundary = boundary
-        self.eps0 = eps0
+        super().__init__(nx, ny, nz, dx, dy, dz, ng, boundary, eps0, particle_backend)
         self.mu0 = mu0
         self.anode_potential = anode_potential
-        self._particle_backend = self._resolve_particle_backend(particle_backend)
-
-        self.Lx = nx * dx
-        self.Ly = ny * dy
-        self.Lz = nz * dz
 
         self.Ex = np.zeros(_shape_ex(nx, ny, nz, ng))
         self.Ey = np.zeros(_shape_ey(nx, ny, nz, ng))
@@ -131,58 +105,13 @@ class YeeGrid:
         self.apply_boundaries()
         self._init_deposit_partials()
 
-    @staticmethod
-    def _resolve_particle_backend(requested: ParticleBackend) -> ParticleBackend:
-        if requested != "numba":
-            return "numpy"
-        try:
-            from .pic_kernels import HAS_NUMBA, warmup_kernels
-
-            if not HAS_NUMBA:
-                return "numpy"
-            warmup_kernels()
-            return "numba"
-        except ImportError:
-            return "numpy"
-
     def _init_deposit_partials(self) -> None:
-        if self._particle_backend != "numba" or self.boundary != "periodic":
+        if not self._use_numba:
             return
-        try:
-            from .pic_kernels import get_num_threads
-
-            n_threads = get_num_threads()
-            self._deposit_rho_partial = np.zeros((n_threads, self.rho.size), dtype=np.float64)
-            self._deposit_jx_partial = np.zeros((n_threads, self.Jx.size), dtype=np.float64)
-            self._deposit_jy_partial = np.zeros((n_threads, self.Jy.size), dtype=np.float64)
-            self._deposit_jz_partial = np.zeros((n_threads, self.Jz.size), dtype=np.float64)
-        except ImportError:
-            pass
-
-    @property
-    def particle_backend(self) -> ParticleBackend:
-        return self._particle_backend
-
-    def position_in_domain_batch(
-        self,
-        positions: NDArray[np.floating],
-        *,
-        in_place: bool = False,
-    ) -> NDArray[np.float64]:
-        pos = positions if in_place else np.asarray(positions, dtype=np.float64).copy()
-        if pos.ndim != 2 or pos.shape[1] != 3:
-            raise ValueError("positions must have shape (N, 3)")
-        if self.boundary == "periodic":
-            lengths = np.array(self.domain_lengths, dtype=np.float64)
-            pos %= lengths
-        else:
-            for i in range(pos.shape[0]):
-                pos[i] = self.clamp_position(pos[i], self.domain_lengths, (self.dx, self.dy, self.dz))
-        return pos
-
-    @property
-    def domain_lengths(self) -> tuple[float, float, float]:
-        return (self.Lx, self.Ly, self.Lz)
+        self._deposit_rho_partial = self._alloc_thread_partials(self.rho.size)
+        self._deposit_jx_partial = self._alloc_thread_partials(self.Jx.size)
+        self._deposit_jy_partial = self._alloc_thread_partials(self.Jy.size)
+        self._deposit_jz_partial = self._alloc_thread_partials(self.Jz.size)
 
     @property
     def c(self) -> float:
@@ -291,64 +220,6 @@ class YeeGrid:
         self._zero_guards_along_axis(self.Bx, 2, ng, nz + 1)
         self._zero_guards_along_axis(self.By, 2, ng, nz + 1)
 
-    def position_in_domain(self, pos: NDArray[np.floating]) -> NDArray[np.float64]:
-        if self.boundary == "periodic":
-            return self.wrap_position(pos, self.domain_lengths)
-
-        return self.clamp_position(pos, self.domain_lengths, (self.dx, self.dy, self.dz))
-
-    @staticmethod
-    def clamp_position(
-        pos: NDArray[np.floating],
-        lengths: tuple[float, float, float],
-        cell_sizes: tuple[float, float, float],
-    ) -> NDArray[np.float64]:
-        clamped = np.asarray(pos, dtype=np.float64).copy()
-        ds = np.array(cell_sizes)
-        for axis, length in enumerate(lengths):
-            upper = max(length - ds[axis], 0.0)
-            clamped[axis] = np.clip(clamped[axis], 0.0, upper)
-        return clamped
-
-    @staticmethod
-    def wrap_position(
-        pos: NDArray[np.floating],
-        lengths: tuple[float, float, float],
-    ) -> NDArray[np.float64]:
-        wrapped = pos.copy()
-        for axis, length in enumerate(lengths):
-            wrapped[axis] %= length
-        return wrapped.astype(np.float64)
-
-    @staticmethod
-    def reflect_position_velocity(
-        pos: NDArray[np.floating],
-        vel: NDArray[np.floating],
-        lengths: tuple[float, float, float],
-    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-        pos_out = np.asarray(pos, dtype=np.float64).copy()
-        vel_out = np.asarray(vel, dtype=np.float64).copy()
-
-        for axis, length in enumerate(lengths):
-            while pos_out[axis] < 0.0:
-                pos_out[axis] = -pos_out[axis]
-                vel_out[axis] = -vel_out[axis]
-            while pos_out[axis] >= length:
-                pos_out[axis] = 2.0 * length - pos_out[axis]
-                vel_out[axis] = -vel_out[axis]
-
-        return pos_out, vel_out
-
-    def reflect_particle(self, particle: Particle) -> None:
-        """Specular wall reflection for reflecting boundary mode."""
-        pos, vel = self.reflect_position_velocity(
-            particle.get_position(),
-            particle.get_velocity(),
-            self.domain_lengths,
-        )
-        particle.set_position(pos)
-        particle.set_velocity(vel)
-
     def update_b(self, dt: float) -> None:
         """Advance B by dt using Faraday's law: dB/dt = -curl(E)."""
         ng = self.ng
@@ -431,31 +302,20 @@ class YeeGrid:
         charges: NDArray[np.floating],
     ) -> None:
         """Batch CIC rho deposit for ``(N, 3)`` positions (same API as ElectrostaticGrid)."""
-        pos = np.asarray(positions, dtype=np.float64).copy()
-        if pos.ndim != 2 or pos.shape[1] != 3:
-            raise ValueError("positions must have shape (N, 3)")
-        if self.boundary == "periodic":
-            lengths = np.array(self.domain_lengths, dtype=np.float64)
-            pos %= lengths
-        else:
-            pos = self.clamp_position(pos, self.domain_lengths, (self.dx, self.dy, self.dz))
-
+        pos = self.position_in_domain_batch(positions)
         charges_arr = np.asarray(charges, dtype=np.float64)
         if charges_arr.ndim != 1 or charges_arr.shape[0] != pos.shape[0]:
             raise ValueError("charges must have shape (N,) matching positions")
-        cell_volume = self.dx * self.dy * self.dz
-        values = charges_arr / cell_volume
+        values = charges_arr / (self.dx * self.dy * self.dz)
 
-        if self.boundary == "periodic" and self._particle_backend == "numba":
+        if self._use_numba:
             try:
                 from .pic_kernels import deposit_cic_periodic
 
                 if self._deposit_rho_partial is None:
-                    from .pic_kernels import get_num_threads
-
-                    self._deposit_rho_partial = np.zeros(
-                        (get_num_threads(), self.rho.size), dtype=np.float64
-                    )
+                    self._deposit_rho_partial = self._alloc_thread_partials(self.rho.size)
+                if self._deposit_rho_partial is None:
+                    raise ImportError("numba deposit partial buffer unavailable")
                 deposit_cic_periodic(
                     self.rho,
                     pos,
@@ -473,8 +333,7 @@ class YeeGrid:
             except ImportError:
                 pass
 
-        for i in range(pos.shape[0]):
-            self._deposit_scalar(self.rho, pos[i], values[i], (0.0, 0.0, 0.0))
+        self._deposit_scalar_batch(self.rho, pos, values, (0.0, 0.0, 0.0))
 
     def deposit_j_cic(
         self,
@@ -521,13 +380,19 @@ class YeeGrid:
 
             new = unwrap_periodic_trajectory(old, new, self.domain_lengths)
 
-        if self.boundary == "periodic" and self._particle_backend == "numba":
+        if self._use_numba:
             try:
                 from .pic_kernels import deposit_j_esirkepov_cic_periodic
 
-                if self._deposit_jx_partial is None:
+                jx_partial = self._deposit_jx_partial
+                jy_partial = self._deposit_jy_partial
+                jz_partial = self._deposit_jz_partial
+                if jx_partial is None or jy_partial is None or jz_partial is None:
                     self._init_deposit_partials()
-                if self._deposit_jx_partial is None:
+                    jx_partial = self._deposit_jx_partial
+                    jy_partial = self._deposit_jy_partial
+                    jz_partial = self._deposit_jz_partial
+                if jx_partial is None or jy_partial is None or jz_partial is None:
                     raise ImportError("numba partial buffers unavailable")
                 deposit_j_esirkepov_cic_periodic(
                     self.Jx,
@@ -543,9 +408,9 @@ class YeeGrid:
                     self.ny,
                     self.nz,
                     self.ng,
-                    self._deposit_jx_partial,
-                    self._deposit_jy_partial,
-                    self._deposit_jz_partial,
+                    jx_partial,
+                    jy_partial,
+                    jz_partial,
                 )
                 return
             except ImportError:
@@ -616,7 +481,7 @@ class YeeGrid:
     def gather_e_cic_batch(self, positions: NDArray[np.floating]) -> NDArray[np.float64]:
         """Batch staggered E gather; returns ``(N, 3)``."""
         pos = self.position_in_domain_batch(positions)
-        if self.boundary == "periodic" and self._particle_backend == "numba":
+        if self._use_numba:
             try:
                 from .pic_kernels import gather_e_yee_cic_periodic
 
@@ -644,7 +509,7 @@ class YeeGrid:
     def gather_b_cic_batch(self, positions: NDArray[np.floating]) -> NDArray[np.float64]:
         """Batch staggered B gather; returns ``(N, 3)``."""
         pos = self.position_in_domain_batch(positions)
-        if self.boundary == "periodic" and self._particle_backend == "numba":
+        if self._use_numba:
             try:
                 from .pic_kernels import gather_b_yee_cic_periodic
 
@@ -668,45 +533,6 @@ class YeeGrid:
         for i in range(n):
             b_out[i] = self.gather_b_cic(float(pos[i, 0]), float(pos[i, 1]), float(pos[i, 2]))
         return b_out
-
-    def _grid_coords(
-        self,
-        pos: NDArray[np.floating],
-        offsets: tuple[float, float, float],
-    ) -> tuple[NDArray[np.float64], NDArray[np.int64], NDArray[np.float64]]:
-        ds = np.array([self.dx, self.dy, self.dz])
-        offs = np.array(offsets)
-        g = pos / ds - offs
-        i0 = np.floor(g).astype(np.int64)
-        f = g - i0
-        return g, i0, f
-
-    def _deposit_scalar(
-        self,
-        field: NDArray[np.floating],
-        pos: NDArray[np.floating],
-        value: float,
-        offsets: tuple[float, float, float],
-    ) -> None:
-        _, i0, f = self._grid_coords(pos, offsets)
-        ng = self.ng
-
-        for di in (0, 1):
-            for dj in (0, 1):
-                for dk in (0, 1):
-                    wi = (1.0 - f[0]) if di == 0 else f[0]
-                    wj = (1.0 - f[1]) if dj == 0 else f[1]
-                    wk = (1.0 - f[2]) if dk == 0 else f[2]
-                    ii = self._logical_cell_index(i0[0] + di, 0) + ng
-                    jj = self._logical_cell_index(i0[1] + dj, 1) + ng
-                    kk = self._logical_cell_index(i0[2] + dk, 2) + ng
-                    field[ii, jj, kk] += value * wi * wj * wk
-
-    def _logical_cell_index(self, logical: int, axis: int) -> int:
-        n_cells = (self.nx, self.ny, self.nz)[axis]
-        if self.boundary == "periodic":
-            return int(logical % n_cells)
-        return int(np.clip(logical, 0, n_cells - 1))
 
     def _logical_component_index(self, logical: int, axis: int, offset: float) -> int:
         n_cells = (self.nx, self.ny, self.nz)[axis]

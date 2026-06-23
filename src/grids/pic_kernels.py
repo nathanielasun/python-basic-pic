@@ -800,11 +800,3 @@ def warmup_kernels() -> None:
     )
     electric_kick_b0(vel, efield, -1.0, 1e-12)
     wrap_positions_periodic(pos, lx, ly, lz)
-
-    try:
-        from Pushers import Pushers
-
-        bfield = np.zeros((2, 3), dtype=np.float64)
-        Pushers.push_batch("higuera_cary", vel, efield, bfield, 1.0, 1.0, 1e-12, c=1.0)
-    except ImportError:
-        pass
