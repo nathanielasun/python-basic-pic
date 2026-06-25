@@ -134,12 +134,32 @@ class YeeGrid(PICGridBase):
         for arr in (self.Jx, self.Jy, self.Jz):
             arr.fill(0.0)
 
+    def _node_aligned_axes(self, field: NDArray[np.floating]) -> tuple[bool, bool, bool]:
+        """Per-axis flag: True where ``field`` carries ``n+1`` (node-aligned) interior points.
+
+        Node-aligned axes (e.g. Ex along x, Bx along y/z) must wrap with period ``n``
+        and keep their redundant node plane reconciled; cell-aligned axes (and all of
+        ``rho``) keep the original period-``n`` cell wrap.
+        """
+        n_cells = (self.nx, self.ny, self.nz)
+        ng = self.ng
+        return (
+            (field.shape[0] - 2 * ng) == n_cells[0] + 1,
+            (field.shape[1] - 2 * ng) == n_cells[1] + 1,
+            (field.shape[2] - 2 * ng) == n_cells[2] + 1,
+        )
+
     def apply_boundaries(self) -> None:
         if self.boundary == "periodic":
             ng = self.ng
+            # Node-aware periodic wrap: node-aligned axes use period n with the
+            # redundant node plane kept equal (idempotent copy). rho is cell-aligned
+            # on every axis, so it reduces to the original wrap. The Esirkepov current
+            # seam (partial contributions on the two coincident faces) is summed once
+            # in deposit_j_esirkepov_cic_batch; here J only needs an idempotent guard fill.
             for field in (self.Ex, self.Ey, self.Ez, self.Bx, self.By, self.Bz, self.rho,
                           self.Jx, self.Jy, self.Jz):
-                _periodic_field(field, ng)
+                _periodic_field(field, ng, node_aligned=self._node_aligned_axes(field))
             return
 
         if self.boundary == "anode":
@@ -292,9 +312,14 @@ class YeeGrid(PICGridBase):
         self.update_e(dt)
 
     def deposit_rho_cic(self, x: float, y: float, z: float, q: float) -> None:
-        """Cloud-in-cell charge deposition onto cell-centered rho (Yee grid interior)."""
+        """Cloud-in-cell charge deposition onto cell-centered rho (Yee grid interior).
+
+        rho is cell-centered (offset 0.5) so that the discrete divergence of the
+        cell-centered/face Esirkepov current lands on rho's cell, i.e. discrete charge
+        continuity and Gauss's law close on the Yee staggering.
+        """
         pos = self.position_in_domain(np.array([x, y, z]))
-        self._deposit_scalar(self.rho, pos, q / (self.dx * self.dy * self.dz), (0.0, 0.0, 0.0))
+        self._deposit_scalar(self.rho, pos, q / (self.dx * self.dy * self.dz), (0.5, 0.5, 0.5))
 
     def deposit_rho_cic_batch(
         self,
@@ -328,12 +353,15 @@ class YeeGrid(PICGridBase):
                     self.nz,
                     self.ng,
                     self._deposit_rho_partial,
+                    0.5,
+                    0.5,
+                    0.5,
                 )
                 return
             except ImportError:
                 pass
 
-        self._deposit_scalar_batch(self.rho, pos, values, (0.0, 0.0, 0.0))
+        self._deposit_scalar_batch(self.rho, pos, values, (0.5, 0.5, 0.5))
 
     def deposit_j_cic(
         self,
@@ -365,8 +393,17 @@ class YeeGrid(PICGridBase):
         pos_old: NDArray[np.floating],
         pos_new: NDArray[np.floating],
         charges: NDArray[np.floating],
+        dt: float,
     ) -> None:
-        """Charge-conserving Esirkepov CIC current deposit for ``(N, 3)`` trajectories."""
+        """Charge-conserving Esirkepov CIC current deposit for ``(N, 3)`` trajectories.
+
+        ``dt`` is the step over which ``pos_old -> pos_new`` occurred; the deposited J is a
+        current density (charge flux / dt), consistent with the ``dt*J`` term in
+        :meth:`update_e`. The longitudinal seam face (index ``n`` along a node-aligned axis)
+        is left untouched here and is reconciled to face ``0`` by :meth:`apply_boundaries`
+        (an idempotent copy); ``update_e`` reads the correct seam current on face ``0``
+        directly, so no separate reduction is required during the field update.
+        """
         old = self.position_in_domain_batch(pos_old)
         new = self.position_in_domain_batch(pos_new)
         if old.shape != new.shape:
@@ -401,6 +438,7 @@ class YeeGrid(PICGridBase):
                     old,
                     new,
                     charges_arr,
+                    dt,
                     self.dx,
                     self.dy,
                     self.dz,
@@ -420,7 +458,7 @@ class YeeGrid(PICGridBase):
             self._deposit_j_esirkepov_scalar(
                 float(old[i, 0]), float(old[i, 1]), float(old[i, 2]),
                 float(new[i, 0]), float(new[i, 1]), float(new[i, 2]),
-                float(charges_arr[i]),
+                float(charges_arr[i]), dt,
             )
 
     def _deposit_j_esirkepov_scalar(
@@ -432,34 +470,17 @@ class YeeGrid(PICGridBase):
         y1: float,
         z1: float,
         charge: float,
+        dt: float,
     ) -> None:
-        """Single-particle Esirkepov deposit (uses Numba helpers when available)."""
-        try:
-            from . import pic_kernels
+        """Single-particle charge-conserving deposit via the shared Esirkepov core."""
+        from .pic_kernels import _esirkepov_core
 
-            if pic_kernels.HAS_NUMBA:
-                pic_kernels._deposit_jx_esirkepov(
-                    self.Jx, x0, y0, z0, x1, y1, z1, charge,
-                    self.dx, self.dy, self.dz, self.nx, self.ny, self.nz, self.ng,
-                )
-                pic_kernels._deposit_jy_esirkepov(
-                    self.Jy, x0, y0, z0, x1, y1, z1, charge,
-                    self.dx, self.dy, self.dz, self.nx, self.ny, self.nz, self.ng,
-                )
-                pic_kernels._deposit_jz_esirkepov(
-                    self.Jz, x0, y0, z0, x1, y1, z1, charge,
-                    self.dx, self.dy, self.dz, self.nx, self.ny, self.nz, self.ng,
-                )
-                return
-        except (ImportError, AttributeError):
-            pass
-        dt_path = 1.0
-        self.deposit_j_cic(
-            x1, y1, z1,
-            (x1 - x0) / dt_path,
-            (y1 - y0) / dt_path,
-            (z1 - z0) / dt_path,
-            charge,
+        _esirkepov_core(
+            self.Jx, self.Jy, self.Jz,
+            x0, y0, z0, x1, y1, z1,
+            charge, dt,
+            self.dx, self.dy, self.dz,
+            self.nx, self.ny, self.nz, self.ng,
         )
 
     def gather_e_cic(self, x: float, y: float, z: float) -> NDArray[np.float64]:

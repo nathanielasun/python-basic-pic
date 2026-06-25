@@ -7,6 +7,9 @@ Yee EM kernels use staggered component offsets matching :class:`grids.YeeGrid`.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import cast
+
 import numpy as np
 
 try:
@@ -31,6 +34,145 @@ except ImportError:
 
     def get_num_threads() -> int:  # type: ignore[misc]
         return 1
+
+
+def _esirkepov_core(
+    jx: np.ndarray,
+    jy: np.ndarray,
+    jz: np.ndarray,
+    x0: float,
+    y0: float,
+    z0: float,
+    x1: float,
+    y1: float,
+    z1: float,
+    q: float,
+    dt: float,
+    dx: float,
+    dy: float,
+    dz: float,
+    nx: int,
+    ny: int,
+    nz: int,
+    ng: int,
+) -> None:
+    """First-order Esirkepov charge-conserving current deposit for one trajectory.
+
+    The (already minimum-image-unwrapped) move is split at integer crossings of the
+    cell-centered coordinates ``u = x/dx - 0.5`` so each sub-segment stays within one
+    cell on every axis. Each sub-segment deposits the exact first-order charge-conserving
+    current, which satisfies the discrete continuity equation
+    ``(rho^{n+1}-rho^n)/dt + div(J) = 0`` to machine precision against the cell-centered
+    rho (offset 0.5). Key properties vs the previous scheme:
+
+    - longitudinal current for cell ``I = floor(x/dx - 0.5)`` lands on x-face ``I+1``
+      (cell-centered staggering), period-``n`` wrapped so the seam face maps onto face 0;
+    - transverse CIC weights use each sub-segment's own midpoint (exact for linear shapes);
+    - the displacement carries the sign of motion (correct for both directions);
+    - the explicit ``1/dt`` makes J a current density consistent with ``update_e``'s ``dt*J``.
+
+    Pure-Python and Numba paths share this single implementation, so they agree exactly.
+    """
+    qdt = q / dt
+    inv_dyz = 1.0 / (dy * dz)
+    inv_dxz = 1.0 / (dx * dz)
+    inv_dxy = 1.0 / (dx * dy)
+
+    ua = x0 / dx - 0.5
+    va = y0 / dy - 0.5
+    wa = z0 / dz - 0.5
+    du = (x1 / dx - 0.5) - ua
+    dv = (y1 / dy - 0.5) - va
+    dw = (z1 / dz - 0.5) - wa
+
+    eps = 1e-12
+    t = 0.0
+    while t < 1.0 - eps:
+        # Nearest next integer crossing in u, v, or w after t (along the motion direction).
+        t_next = 1.0
+        if du > eps or du < -eps:
+            cur = ua + du * t
+            nxt = (np.floor(cur + eps) + 1.0) if du > 0.0 else (np.ceil(cur - eps) - 1.0)
+            tc = (nxt - ua) / du
+            if tc > t + eps and tc < t_next:
+                t_next = tc
+        if dv > eps or dv < -eps:
+            cur = va + dv * t
+            nxt = (np.floor(cur + eps) + 1.0) if dv > 0.0 else (np.ceil(cur - eps) - 1.0)
+            tc = (nxt - va) / dv
+            if tc > t + eps and tc < t_next:
+                t_next = tc
+        if dw > eps or dw < -eps:
+            cur = wa + dw * t
+            nxt = (np.floor(cur + eps) + 1.0) if dw > 0.0 else (np.ceil(cur - eps) - 1.0)
+            tc = (nxt - wa) / dw
+            if tc > t + eps and tc < t_next:
+                t_next = tc
+        if t_next > 1.0:
+            t_next = 1.0
+
+        ua_s = ua + du * t
+        va_s = va + dv * t
+        wa_s = wa + dw * t
+        seg_du = du * (t_next - t)
+        seg_dv = dv * (t_next - t)
+        seg_dw = dw * (t_next - t)
+
+        um = ua_s + 0.5 * seg_du
+        vm = va_s + 0.5 * seg_dv
+        wm = wa_s + 0.5 * seg_dw
+        ic = int(np.floor(um))
+        jc = int(np.floor(vm))
+        kc = int(np.floor(wm))
+        fu = um - ic
+        fv = vm - jc
+        fw = wm - kc
+
+        # Each current component's transverse weight is a product of two linear shapes
+        # that both vary along the sub-segment. The exact time-integral of that product
+        # is (midpoint product) + (slope_a * slope_b)/12 -- the Esirkepov bilinear cross
+        # term that the bare midpoint weighting omits. The slopes are +-Δ on the two
+        # transverse cells, so the correction is sign(di)*sign(dj)*Δ_a*Δ_b/12.
+        valx = qdt * seg_du * inv_dyz
+        cross_x = seg_dv * seg_dw / 12.0
+        ix = (ic + 1) % nx + ng
+        for dj in range(2):
+            wj = (1.0 - fv) if dj == 0 else fv
+            sj = -1.0 if dj == 0 else 1.0
+            jj = (jc + dj) % ny + ng
+            for dk in range(2):
+                wk = (1.0 - fw) if dk == 0 else fw
+                sk = -1.0 if dk == 0 else 1.0
+                kk = (kc + dk) % nz + ng
+                jx[ix, jj, kk] += valx * (wj * wk + sj * sk * cross_x)
+
+        valy = qdt * seg_dv * inv_dxz
+        cross_y = seg_du * seg_dw / 12.0
+        jyf = (jc + 1) % ny + ng
+        for di in range(2):
+            wi = (1.0 - fu) if di == 0 else fu
+            si = -1.0 if di == 0 else 1.0
+            ii = (ic + di) % nx + ng
+            for dk in range(2):
+                wk = (1.0 - fw) if dk == 0 else fw
+                sk = -1.0 if dk == 0 else 1.0
+                kk = (kc + dk) % nz + ng
+                jy[ii, jyf, kk] += valy * (wi * wk + si * sk * cross_y)
+
+        valz = qdt * seg_dw * inv_dxy
+        cross_z = seg_du * seg_dv / 12.0
+        kzf = (kc + 1) % nz + ng
+        for di in range(2):
+            wi = (1.0 - fu) if di == 0 else fu
+            si = -1.0 if di == 0 else 1.0
+            ii = (ic + di) % nx + ng
+            for dj in range(2):
+                wj = (1.0 - fv) if dj == 0 else fv
+                sj = -1.0 if dj == 0 else 1.0
+                jj = (jc + dj) % ny + ng
+                jz[ii, jj, kzf] += valz * (wi * wj + si * sj * cross_z)
+
+        t = t_next
 
 
 if HAS_NUMBA:
@@ -138,280 +280,23 @@ if HAS_NUMBA:
                     kk = _logical_yee_index(i0z + dk, npz) + ng
                     field[ii, jj, kk] += value * wi * wj * wk
 
-    @njit(cache=True)
-    def _add_jx_yz_cic(
-        jx: np.ndarray,
-        iface: int,
-        jy0: int,
-        jz0: int,
-        fy: float,
-        fz: float,
-        val: float,
-        nx: int,
-        ny: int,
-        nz: int,
-        ng: int,
-    ) -> None:
-        ii = _logical_yee_index(iface, nx + 1) + ng
-        for dj in range(2):
-            wj = (1.0 - fy) if dj == 0 else fy
-            jj = _logical_yee_index(jy0 + dj, ny) + ng
-            for dk in range(2):
-                wk = (1.0 - fz) if dk == 0 else fz
-                kk = _logical_yee_index(jz0 + dk, nz) + ng
-                jx[ii, jj, kk] += val * wj * wk
-
-    @njit(cache=True)
-    def _add_jy_xz_cic(
-        jy: np.ndarray,
-        jiface: int,
-        jx0: int,
-        jz0: int,
-        fx: float,
-        fz: float,
-        val: float,
-        nx: int,
-        ny: int,
-        nz: int,
-        ng: int,
-    ) -> None:
-        jj = _logical_yee_index(jiface, ny + 1) + ng
-        for di in range(2):
-            wi = (1.0 - fx) if di == 0 else fx
-            ii = _logical_yee_index(jx0 + di, nx) + ng
-            for dk in range(2):
-                wk = (1.0 - fz) if dk == 0 else fz
-                kk = _logical_yee_index(jz0 + dk, nz) + ng
-                jy[ii, jj, kk] += val * wi * wk
-
-    @njit(cache=True)
-    def _add_jz_xy_cic(
-        jz: np.ndarray,
-        kface: int,
-        jx0: int,
-        jy0: int,
-        fx: float,
-        fy: float,
-        val: float,
-        nx: int,
-        ny: int,
-        nz: int,
-        ng: int,
-    ) -> None:
-        kk = _logical_yee_index(kface, nz + 1) + ng
-        for di in range(2):
-            wi = (1.0 - fx) if di == 0 else fx
-            ii = _logical_yee_index(jx0 + di, nx) + ng
-            for dj in range(2):
-                wj = (1.0 - fy) if dj == 0 else fy
-                jj = _logical_yee_index(jy0 + dj, ny) + ng
-                jz[ii, jj, kk] += val * wi * wj
-
-    @njit(cache=True)
-    def _deposit_jx_esirkepov(
-        jx: np.ndarray,
-        x0: float,
-        y0: float,
-        z0: float,
-        x1: float,
-        y1: float,
-        z1: float,
-        charge: float,
-        dx: float,
-        dy: float,
-        dz: float,
-        nx: int,
-        ny: int,
-        nz: int,
-        ng: int,
-    ) -> None:
-        ym = 0.5 * (y0 + y1)
-        zm = 0.5 * (z0 + z1)
-        gy = ym / dy - 0.5
-        gz = zm / dz - 0.5
-        jy0 = int(np.floor(gy))
-        jz0 = int(np.floor(gz))
-        fy = gy - jy0
-        fz = gz - jz0
-        inv_dyz = 1.0 / (dy * dz)
-
-        gx0 = x0 / dx
-        gx1 = x1 / dx
-        if gx1 > gx0:
-            remaining = gx1 - gx0
-            idx = int(np.floor(gx0))
-            frac = gx0 - idx
-            while remaining > 1e-15:
-                if frac + remaining < 1.0:
-                    contrib = remaining
-                    remaining = 0.0
-                else:
-                    contrib = 1.0 - frac
-                    remaining -= contrib
-                val = charge * contrib * dx * inv_dyz
-                _add_jx_yz_cic(jx, idx + 1, jy0, jz0, fy, fz, val, nx, ny, nz, ng)
-                idx += 1
-                frac = 0.0
-        elif gx1 < gx0:
-            remaining = gx0 - gx1
-            idx = int(np.floor(gx0))
-            frac = gx0 - idx
-            if frac < 1e-15:
-                idx -= 1
-                frac = 1.0
-            while remaining > 1e-15:
-                if frac - remaining > 0.0:
-                    contrib = remaining
-                    remaining = 0.0
-                else:
-                    contrib = frac
-                    remaining -= contrib
-                val = charge * contrib * dx * inv_dyz
-                _add_jx_yz_cic(jx, idx + 1, jy0, jz0, fy, fz, val, nx, ny, nz, ng)
-                idx -= 1
-                frac = 1.0
-
-    @njit(cache=True)
-    def _deposit_jy_esirkepov(
-        jy: np.ndarray,
-        x0: float,
-        y0: float,
-        z0: float,
-        x1: float,
-        y1: float,
-        z1: float,
-        charge: float,
-        dx: float,
-        dy: float,
-        dz: float,
-        nx: int,
-        ny: int,
-        nz: int,
-        ng: int,
-    ) -> None:
-        xm = 0.5 * (x0 + x1)
-        zm = 0.5 * (z0 + z1)
-        gx = xm / dx - 0.5
-        gz = zm / dz - 0.5
-        jx0 = int(np.floor(gx))
-        jz0 = int(np.floor(gz))
-        fx = gx - jx0
-        fz = gz - jz0
-        inv_dxz = 1.0 / (dx * dz)
-
-        gy0 = y0 / dy
-        gy1 = y1 / dy
-        if gy1 > gy0:
-            remaining = gy1 - gy0
-            idx = int(np.floor(gy0))
-            frac = gy0 - idx
-            while remaining > 1e-15:
-                if frac + remaining < 1.0:
-                    contrib = remaining
-                    remaining = 0.0
-                else:
-                    contrib = 1.0 - frac
-                    remaining -= contrib
-                val = charge * contrib * dy * inv_dxz
-                _add_jy_xz_cic(jy, idx + 1, jx0, jz0, fx, fz, val, nx, ny, nz, ng)
-                idx += 1
-                frac = 0.0
-        elif gy1 < gy0:
-            remaining = gy0 - gy1
-            idx = int(np.floor(gy0))
-            frac = gy0 - idx
-            if frac < 1e-15:
-                idx -= 1
-                frac = 1.0
-            while remaining > 1e-15:
-                if frac - remaining > 0.0:
-                    contrib = remaining
-                    remaining = 0.0
-                else:
-                    contrib = frac
-                    remaining -= contrib
-                val = charge * contrib * dy * inv_dxz
-                _add_jy_xz_cic(jy, idx + 1, jx0, jz0, fx, fz, val, nx, ny, nz, ng)
-                idx -= 1
-                frac = 1.0
-
-    @njit(cache=True)
-    def _deposit_jz_esirkepov(
-        jz: np.ndarray,
-        x0: float,
-        y0: float,
-        z0: float,
-        x1: float,
-        y1: float,
-        z1: float,
-        charge: float,
-        dx: float,
-        dy: float,
-        dz: float,
-        nx: int,
-        ny: int,
-        nz: int,
-        ng: int,
-    ) -> None:
-        xm = 0.5 * (x0 + x1)
-        ym = 0.5 * (y0 + y1)
-        gx = xm / dx - 0.5
-        gy = ym / dy - 0.5
-        jx0 = int(np.floor(gx))
-        jy0 = int(np.floor(gy))
-        fx = gx - jx0
-        fy = gy - jy0
-        inv_dxy = 1.0 / (dx * dy)
-
-        gz0 = z0 / dz
-        gz1 = z1 / dz
-        if gz1 > gz0:
-            remaining = gz1 - gz0
-            idx = int(np.floor(gz0))
-            frac = gz0 - idx
-            while remaining > 1e-15:
-                if frac + remaining < 1.0:
-                    contrib = remaining
-                    remaining = 0.0
-                else:
-                    contrib = 1.0 - frac
-                    remaining -= contrib
-                val = charge * contrib * dz * inv_dxy
-                _add_jz_xy_cic(jz, idx + 1, jx0, jy0, fx, fy, val, nx, ny, nz, ng)
-                idx += 1
-                frac = 0.0
-        elif gz1 < gz0:
-            remaining = gz0 - gz1
-            idx = int(np.floor(gz0))
-            frac = gz0 - idx
-            if frac < 1e-15:
-                idx -= 1
-                frac = 1.0
-            while remaining > 1e-15:
-                if frac - remaining > 0.0:
-                    contrib = remaining
-                    remaining = 0.0
-                else:
-                    contrib = frac
-                    remaining -= contrib
-                val = charge * contrib * dz * inv_dxy
-                _add_jz_xy_cic(jz, idx + 1, jx0, jy0, fx, fy, val, nx, ny, nz, ng)
-                idx -= 1
-                frac = 1.0
+    # Charge-conserving current deposit: Numba-compiled view of the shared core.
+    _esirkepov_core_nb = cast("Callable[..., None]", njit(cache=True)(_esirkepov_core))
 
     @njit(cache=True)
     def _deposit_particles_esirkepov_to_flat(
         jx_flat: np.ndarray,
         jy_flat: np.ndarray,
         jz_flat: np.ndarray,
-        jx_shape: tuple,
-        jy_shape: tuple,
-        jz_shape: tuple,
+        jx_shape: tuple[int, ...],
+        jy_shape: tuple[int, ...],
+        jz_shape: tuple[int, ...],
         pos_old: np.ndarray,
         pos_new: np.ndarray,
         charges: np.ndarray,
         start: int,
         end: int,
+        dt: float,
         dx: float,
         dy: float,
         dz: float,
@@ -427,9 +312,9 @@ if HAS_NUMBA:
             q = charges[p]
             x0, y0, z0 = pos_old[p, 0], pos_old[p, 1], pos_old[p, 2]
             x1, y1, z1 = pos_new[p, 0], pos_new[p, 1], pos_new[p, 2]
-            _deposit_jx_esirkepov(jx, x0, y0, z0, x1, y1, z1, q, dx, dy, dz, nx, ny, nz, ng)
-            _deposit_jy_esirkepov(jy, x0, y0, z0, x1, y1, z1, q, dx, dy, dz, nx, ny, nz, ng)
-            _deposit_jz_esirkepov(jz, x0, y0, z0, x1, y1, z1, q, dx, dy, dz, nx, ny, nz, ng)
+            _esirkepov_core_nb(
+                jx, jy, jz, x0, y0, z0, x1, y1, z1, q, dt, dx, dy, dz, nx, ny, nz, ng
+            )
 
     @njit(cache=True)
     def _deposit_particles_to_flat(
@@ -447,11 +332,14 @@ if HAS_NUMBA:
         ng: int,
         ny_tot: int,
         nz_tot: int,
+        ox: float,
+        oy: float,
+        oz: float,
     ) -> None:
         for p in range(start, end):
-            gx = positions[p, 0] / dx
-            gy = positions[p, 1] / dy
-            gz = positions[p, 2] / dz
+            gx = positions[p, 0] / dx - ox
+            gy = positions[p, 1] / dy - oy
+            gz = positions[p, 2] / dz - oz
             i0x = int(np.floor(gx))
             i0y = int(np.floor(gy))
             i0z = int(np.floor(gz))
@@ -485,8 +373,15 @@ if HAS_NUMBA:
         nz: int,
         ng: int,
         partial: np.ndarray,
+        ox: float = 0.0,
+        oy: float = 0.0,
+        oz: float = 0.0,
     ) -> None:
-        """Scatter-add CIC weights onto ``rho`` (in-place) for periodic boundaries."""
+        """Scatter-add CIC weights onto ``rho`` (in-place) for periodic boundaries.
+
+        ``(ox, oy, oz)`` is the grid-point offset in cells: ``0.0`` deposits on integer
+        nodes (electrostatic / node-centered rho), ``0.5`` on cell centers (Yee rho).
+        """
         ny_tot = rho.shape[1]
         nz_tot = rho.shape[2]
         flat = rho.ravel()
@@ -519,6 +414,9 @@ if HAS_NUMBA:
                     ng,
                     ny_tot,
                     nz_tot,
+                    ox,
+                    oy,
+                    oz,
                 )
 
         for i in prange(flat.size):
@@ -651,6 +549,7 @@ if HAS_NUMBA:
         pos_old: np.ndarray,
         pos_new: np.ndarray,
         charges: np.ndarray,
+        dt: float,
         dx: float,
         dy: float,
         dz: float,
@@ -699,6 +598,7 @@ if HAS_NUMBA:
                     charges,
                     start,
                     end,
+                    dt,
                     dx,
                     dy,
                     dz,
@@ -795,7 +695,7 @@ def warmup_kernels() -> None:
     partial_jy = np.zeros((n_threads, jy.size), dtype=np.float64)
     partial_jz = np.zeros((n_threads, jz.size), dtype=np.float64)
     deposit_j_esirkepov_cic_periodic(
-        jx, jy, jz, pos, pos_new, charges, dx, dy, dz, nx, ny, nz, ng,
+        jx, jy, jz, pos, pos_new, charges, 1.0, dx, dy, dz, nx, ny, nz, ng,
         partial_jx, partial_jy, partial_jz,
     )
     electric_kick_b0(vel, efield, -1.0, 1e-12)
