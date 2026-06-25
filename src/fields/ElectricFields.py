@@ -297,5 +297,11 @@ def plane_wave_em_pair(
     if c is None:
         c = 299792458.0
     efield = ElectricFields.plane_wave_local(E0, omega, k_magnitude=k_mag, phase0=phase0, psi=psi)
-    bfield = MagneticFields.plane_wave_local(E0 / c, omega, k_magnitude=k_mag, phase0=phase0, psi=psi)
+    # B = (k_hat x E)/c must be perpendicular to E, not parallel: rotate the transverse
+    # polarization vector by +pi/2 within the wave frame so |B| = |E|/c, in phase, and the
+    # Poynting vector E x B points along +k. (Linear polarization only, which is all this
+    # helper emits; the magnitude factor E0/c is unchanged.)
+    bfield = MagneticFields.plane_wave_local(
+        E0 / c, omega, k_magnitude=k_mag, phase0=phase0, psi=psi + np.pi / 2.0
+    )
     return efield, bfield
